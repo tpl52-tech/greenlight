@@ -25,16 +25,15 @@
   const verdictCredit = r => r.verdict && r.verdictBy ? ' · recorded by ' + escapeHtml(testerName(r.verdictBy)) + (r.verdictAt ? ' ' + timeAgo(r.verdictAt) : '') : '';
   let me = null; // this viewer's tester id
 
-  // ReUse App — Fall 2026, "Verifying" column
+  // ReUse App — Fall 2026; the queue is the project's `manual-qa`-labeled sub-issues.
   const PROJECT_UUID = 'ee39f4b9-275e-40c1-a55e-1ead80ec5a94';
-  const VERIFYING_STATE = 'ef16b814-57c3-46cd-9c6c-923ccfd39e83';
   const LINEAR_SERVER = 'Linear';
 
   // ---------- baked run sheets (resting state; refreshed from Linear) ----------
   const INITIAL_TICKETS = [
     {
-      id:'COR-17', comp:'Search', milestone:'Phase 1a — Search & Home', assignee:'Enaika Kishnani',
-      priority:'high', labels:['beginner'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-17/search-screen-results-list',
+      id:'COR-91', parent:'COR-17', comp:'Search', milestone:'Phase 1a — Search & Home', assignee:'Unassigned',
+      priority:'normal', labels:['manual-qa'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-91/qa-verify-search-screen-results-list',
       title:'Search screen: results list',
       summary:'The Search tab shows a live results list from the database — typing filters results, each card shows image, title, condition stars and price, with proper loading, empty and no-match states.',
       pre:[
@@ -58,8 +57,8 @@
       ],
     },
     {
-      id:'COR-19', comp:'Home', milestone:'Phase 1a — Search & Home', assignee:'Lahari Bandaru',
-      priority:'normal', labels:['beginner'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-19/home-item-sections-from-real-data',
+      id:'COR-93', parent:'COR-19', comp:'Home', milestone:'Phase 1a — Search & Home', assignee:'Unassigned',
+      priority:'normal', labels:['manual-qa'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-93/qa-verify-home-item-sections-from-real-data',
       title:'Home: item sections from real data',
       summary:'The Home tab renders its Recommended/Deals and New Additions sections from the database — no mock data — with price and condition shown correctly, plus loading and empty states.',
       pre:['Signed in, with the app running in Expo Go.', 'The database has seeded active items.'],
@@ -77,8 +76,8 @@
       ],
     },
     {
-      id:'COR-54', comp:'Components', milestone:'Phase 1a — Search & Home', assignee:'Hyunsuh',
-      priority:'normal', labels:['beginner'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-54/conditionstars-reusable-1-5-star-rating-component',
+      id:'COR-94', parent:'COR-54', comp:'Components', milestone:'Phase 1a — Search & Home', assignee:'Unassigned',
+      priority:'normal', labels:['manual-qa'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-94/qa-verify-conditionstars-1-5-star-rating',
       title:'ConditionStars: 1–5 star rating component',
       summary:'A reusable 1–5 star rating that renders an item’s condition — "condition" stars filled out of five — matching the Figma, and never crashing on missing or out-of-range input.',
       pre:['Signed in, with Home or Search showing items that span a range of condition values.'],
@@ -96,8 +95,8 @@
       ],
     },
     {
-      id:'COR-23', comp:'Auth', milestone:'Phase 1b — Auth', assignee:'Neha Bommireddy',
-      priority:'normal', labels:['lead-level'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-23/login-screen-figma-signinwithemailandpassword',
+      id:'COR-95', parent:'COR-23', comp:'Auth', milestone:'Phase 1b — Auth', assignee:'Unassigned',
+      priority:'normal', labels:['manual-qa'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-95/qa-verify-login-screen-sign-in',
       title:'Login screen → sign-in',
       summary:'The Login screen signs a user in with email and password, lands on the home tabs, shows human error messages for bad credentials, presents SSO as "coming soon", and keeps the session across an app restart.',
       pre:['A seeded test account (email + password) from the lead.', 'The app running in Expo Go, signed out.'],
@@ -116,8 +115,8 @@
       ],
     },
     {
-      id:'COR-35', comp:'Favorites', milestone:'Phase 3 — Profile & notifications', assignee:'Willow Chen',
-      priority:'normal', labels:['beginner','db-migration'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-35/favorites-heart-toggle-favorited-items-list',
+      id:'COR-96', parent:'COR-35', comp:'Favorites', milestone:'Phase 3 — Profile & notifications', assignee:'Unassigned',
+      priority:'normal', labels:['manual-qa'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-96/qa-verify-favorites-heart-toggle-list',
       title:'Favorites — heart toggle + Favorited Items list',
       summary:'Tapping a heart favorites an item, it shows up in the Favorites tab, un-tapping removes it, and favorites survive an app reload. Everything here is visible on screen — no database poking.',
       pre:[
@@ -285,7 +284,6 @@
   let refreshing = false;
   let refreshError = null;
   let lastRefreshed = null;
-  let hiddenCount = 0;      // backend-only tickets excluded on the last refresh (the verify sweep owns those)
 
   function stripMd(s) {
     return String(s || '')
@@ -308,47 +306,68 @@
     while ((m = re.exec(d))) { const t = stripMd(m[1]); if (t) out.push(t); }
     return out;
   }
+  // Parse the run sheet out of a manual-qa ticket's description — the format the authoring step writes:
+  //   ## What "working" means / ## Before you start (bullets) / optional "> **Heads up:** …" / ## Steps with
+  //   "**N. Title**" blocks whose bullets carry "✅ Expect — …" and "❌ Fail if — …". Linear is the source of truth.
+  function parseRunSheet(desc) {
+    if (!desc) return null;
+    const text = String(desc).replace(/\r/g, '');
+    const hu = text.match(/^>\s*\*\*Heads up:\*\*\s*(.+)$/mi);
+    const sm = text.match(/##\s*What\s*["“]?working["”]?\s*means\s*\n+([\s\S]*?)(?=\n##\s|\n>|\n---|$)/i);
+    const pb = text.match(/##\s*Before you start\s*\n+([\s\S]*?)(?=\n##\s|\n---|$)/i);
+    const pre = pb ? pb[1].split('\n').filter(l => /^\s*[*-]\s+/.test(l)).map(l => l.replace(/^\s*[*-]\s+/, '').trim()).filter(Boolean) : [];
+    const block = text.split(/##\s*Steps\s*\n/i)[1] || '';
+    const steps = []; const re = /\*\*(\d+)\.\s*([^\n*]+?)\*\*\s*\n([\s\S]*?)(?=\n\*\*\d+\.|\n---|$)/g; let m;
+    while ((m = re.exec(block))) {
+      const step = { n: +m[1], title: m[2].trim(), do: [] };
+      m[3].split('\n').map(l => l.trim()).filter(l => /^[*-]\s+/.test(l)).map(l => l.replace(/^[*-]\s+/, '')).forEach(l => {
+        if (/^✅\s*Expect\s*[—-]\s*/.test(l)) step.expect = l.replace(/^✅\s*Expect\s*[—-]\s*/, '').trim();
+        else if (/^❌\s*Fail if\s*[—-]\s*/.test(l)) step.failif = l.replace(/^❌\s*Fail if\s*[—-]\s*/, '').trim();
+        else step.do.push(l);
+      });
+      if (!step.expect) step.expect = 'It behaves as described.';
+      steps.push(step);
+    }
+    if (!steps.length) return null;
+    return { summary: sm ? stripMd(sm[1]).trim() : '', pre, headsup: hu ? hu[1].trim() : null, steps };
+  }
+  // Fallback when a ticket's description has no run-sheet structure (e.g. a plain acceptance-criteria list).
   function autoSheet(issue) {
     const crit = parseCriteria(issue.description);
     const steps = crit.length
       ? crit.map((c, i) => ({ n:i+1, title:'Acceptance check ' + (i+1), do:[], expect:c }))
       : [{ n:1, title:'Verify the feature', do:['Exercise the behavior described in the ticket.'], expect:'It works as the ticket describes.' }];
-    return { comp:'ReUse App', summary: cleanDesc(issue.description) || issue.title, pre:['Signed in, with the app running on your phone in Expo Go.'], steps };
+    return { summary: cleanDesc(issue.description) || issue.title, pre:['Signed in, with the app running on your phone in Expo Go.'], steps };
   }
-  // Normalize Linear fields defensively: this session's list_issues returns priority as
-  // {value,name}, assignee as a string, labels as string[] — but accept object/scalar either way.
+  // Normalize Linear fields defensively: list_issues returns priority {value,name}, assignee string,
+  // labels string[], parentId the parent identifier — but accept object/scalar either way.
   function personName(a) { return (a && typeof a === 'object') ? (a.name || a.displayName || a.email || null) : (a || null); }
   function labelNames(ls) { return Array.isArray(ls) ? ls.map(l => (l && typeof l === 'object') ? (l.name || '') : l).filter(Boolean) : null; }
   function priorityRank(p) { const v = (p && typeof p === 'object') ? p.value : p; return (v === 1 || v === 2) ? 'high' : 'normal'; }
+  // A ticket here IS a manual-qa sub-issue; its run sheet comes from its own description (baked offline fallback).
   function buildTicket(issue) {
     const baked = BAKED[issue.id];
-    const sheet = baked || autoSheet(issue);
+    const sheet = parseRunSheet(issue.description) || baked || autoSheet(issue);
     const hasPriority = issue.priority !== undefined && issue.priority !== null;
     return {
       id: issue.id,
-      title: (baked && baked.title) || issue.title,
-      comp: sheet.comp || 'ReUse App',
+      parent: issue.parentId || (baked && baked.parent) || null,
+      title: (issue.title || '').replace(/^\s*QA verify:\s*/i, '').trim() || (baked && baked.title) || issue.id,
+      comp: (baked && baked.comp) || 'Manual QA',
       milestone: (issue.projectMilestone && issue.projectMilestone.name) || (baked && baked.milestone) || '',
       assignee: personName(issue.assignee) || (baked && baked.assignee) || 'Unassigned',
       priority: hasPriority ? priorityRank(issue.priority) : ((baked && baked.priority) || 'normal'),
       labels: labelNames(issue.labels) || (baked && baked.labels) || [],
       url: issue.url || (baked && baked.url) || '#',
-      summary: sheet.summary, pre: sheet.pre, headsup: sheet.headsup, steps: sheet.steps,
+      summary: sheet.summary, pre: sheet.pre || [], headsup: sheet.headsup, steps: sheet.steps,
     };
   }
   const byPriority = (a, b) => (a.priority === 'high' ? 0 : 1) - (b.priority === 'high' ? 0 : 1);
 
-  // Cue QA is manual testing for non-technical members: only tickets whose "working" is observable by using
-  // the app belong here. Backend-only work (RLS, triggers, migrations, Workers, endpoints) is the verify
-  // sweep's job, not manual QA. A screen signal keeps a ticket (ui/mixed); one written only in backend terms,
-  // naming nothing on screen, is dropped.
-  // NB: no "catalog" — in the ReUse app that's the items screen (a UI word), not a backend signal.
-  const BACKEND_RX = /\b(rls|row[- ]level|deny-all|polic(y|ies)|trigger|migration|schema|service[_ ]role|webhook|worker|endpoint|edge function|durable object|cron|select-only|grant|jwt|id token)\b/i;
-  const SCREEN_RX = /\b(figma|screen|tap|button|card|list|grid|render|expo go|tab|form|empty state|loading|photo|image|star|heart|navigat|banner|badge|avatar|scroll)\b/i;
-  function isManualQa(issue) {
-    const text = (issue.title || '') + ' ' + (issue.description || '');
-    return SCREEN_RX.test(text) || !BACKEND_RX.test(text);
-  }
+  // Which tickets a tester should work is decided upstream (the sweep classifies ui/backend/mixed and a
+  // `manual-qa` sub-issue is authored for the screen-testable ones). Cue QA just lists the manual-qa tickets —
+  // no in-app classification. Keep only the active ones (a Done/Canceled sub-issue is off the queue).
+  const isActiveManualQa = i => (labelNames(i.labels) || []).includes('manual-qa') && i.statusType !== 'completed' && i.statusType !== 'canceled';
 
   function errText(code) {
     switch (code) {
@@ -375,13 +394,11 @@
     refreshing = true; refreshError = null; renderStatus();
     try {
       const res = await mcpCap.callTool(LINEAR_SERVER, 'list_issues',
-        { project: PROJECT_UUID, state: VERIFYING_STATE, limit: 50 });
+        { project: PROJECT_UUID, limit: 100 });
       const payload = res && res.payload;
       const issues = payload && (payload.issues || (Array.isArray(payload) ? payload : null));
       if (!Array.isArray(issues)) throw { code: 'tool_error' }; // unexpected shape: keep current list, show error
-      const manual = issues.filter(isManualQa);
-      hiddenCount = issues.length - manual.length; // backend-only tickets the verify sweep owns, not manual QA
-      tickets = manual.map(buildTicket).sort(byPriority);
+      tickets = issues.filter(isActiveManualQa).map(buildTicket).sort(byPriority);
       if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
       lastRefreshed = Date.now(); refreshing = false; renderAll();
     } catch (err) {
@@ -395,7 +412,7 @@
     { id:'prog', name:'In Progress' }, { id:'done', name:'Done' },
   ];
   let queueFilter = 'all';
-  let current = 'COR-35';
+  let current = 'COR-96';
   let searchQ = '';
 
   function statusOf(id) {
@@ -428,7 +445,7 @@
     el.className = 'q-status';
     if (refreshing) { el.textContent = 'Refreshing from Linear…'; return; }
     if (refreshError) { el.textContent = errText(refreshError); el.className = 'q-status err'; return; }
-    if (lastRefreshed) { el.textContent = 'Updated from Linear ' + timeAgo(lastRefreshed) + (hiddenCount ? ' · ' + hiddenCount + ' backend-only hidden' : ''); return; }
+    if (lastRefreshed) { el.textContent = 'Updated from Linear ' + timeAgo(lastRefreshed); return; }
     if (mcpCap === null) { el.textContent = 'Connect Linear to refresh'; return; }
     el.textContent = 'Baked snapshot · tap ↻ to sync with Linear';
   }
@@ -461,7 +478,7 @@
         <div class="q-name">${escapeHtml(t.title)}</div>
         <div class="q-bottom">
           <span class="q-steps">${done}/${total} steps${by}</span>
-          <span class="who">${avaHTML(t.assignee)} ${escapeHtml((t.assignee || '').split(' ')[0])}</span>
+          <span class="who">${t.parent ? '↳ ' + escapeHtml(t.parent) : ''}</span>
         </div>
       </button>`;
     }).join('');
@@ -517,10 +534,10 @@
       <button class="back" id="backBtn">${ICON.back} Queue</button>
       <div class="sh-head">
         <div style="min-width:0">
-          <div class="sh-eyebrow">${escapeHtml(t.id)} · ${escapeHtml(t.comp)}</div>
+          <div class="sh-eyebrow">${escapeHtml(t.id)} · ${escapeHtml(t.comp)}${t.parent ? ' · verifying ' + escapeHtml(t.parent) : ''}</div>
           <h1 class="sh-title">${escapeHtml(t.title)}</h1>
           <div class="sh-meta">
-            <span class="who"><span class="wl">Built by</span> ${avaHTML(t.assignee)} ${escapeHtml(t.assignee)}</span>
+            <span class="who"><span class="wl">Tester</span> ${avaHTML(t.assignee)} ${escapeHtml(t.assignee)}</span>
             ${t.priority === 'high' ? `<span class="prio">${ICON.flag} High</span>` : ''}
             ${t.milestone ? `<span>${escapeHtml(t.milestone)}</span>` : ''}
             ${(t.labels || []).map(l => `<span class="ltag">${escapeHtml(l)}</span>`).join('')}
