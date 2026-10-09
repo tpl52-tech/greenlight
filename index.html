@@ -662,7 +662,8 @@
   // the app belong here. Backend-only work (RLS, triggers, migrations, Workers, endpoints) is the verify
   // sweep's job, not manual QA. A screen signal keeps a ticket (ui/mixed); one written only in backend terms,
   // naming nothing on screen, is dropped.
-  const BACKEND_RX = /\b(rls|row[- ]level|deny-all|polic(y|ies)|trigger|migration|schema|catalog|service[_ ]role|webhook|worker route|endpoint|select-only|grant|jwt|id token)\b/i;
+  // NB: no "catalog" — in the ReUse app that's the items screen (a UI word), not a backend signal.
+  const BACKEND_RX = /\b(rls|row[- ]level|deny-all|polic(y|ies)|trigger|migration|schema|service[_ ]role|webhook|worker|endpoint|edge function|durable object|cron|select-only|grant|jwt|id token)\b/i;
   const SCREEN_RX = /\b(figma|screen|tap|button|card|list|grid|render|expo go|tab|form|empty state|loading|photo|image|star|heart|navigat|banner|badge|avatar|scroll)\b/i;
   function isManualQa(issue) {
     const text = (issue.title || '') + ' ' + (issue.description || '');

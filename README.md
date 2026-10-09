@@ -23,8 +23,10 @@ Both are single static HTML files — no build step.
 Cue QA ships with the screen-observable tickets that were in **Verifying** as a
 baked-in snapshot, each turned into a run sheet from its real acceptance criteria
 (COR-35 uses the lead's hand-written script verbatim). The **↻ Refresh** button
-re-pulls the Verifying column live and filters out backend-only tickets (and shows
-how many it hid), so non-technical testers only ever see what they can tap through.
+re-pulls the Verifying column live and hides tickets written as pure backend work
+(and shows how many it hid), so non-technical testers see what they can tap through.
+It errs toward showing — an occasional backend ticket can slip through and is just
+skipped — rather than risk hiding something a tester could actually check.
 
 ## Running it
 
