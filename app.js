@@ -317,12 +317,12 @@
     const pb = text.match(/##\s*Before you start\s*\n+([\s\S]*?)(?=\n##\s|\n---|$)/i);
     const pre = pb ? pb[1].split('\n').filter(l => /^\s*[*-]\s+/.test(l)).map(l => l.replace(/^\s*[*-]\s+/, '').trim()).filter(Boolean) : [];
     const block = text.split(/##\s*Steps\s*\n/i)[1] || '';
-    const steps = []; const re = /\*\*(\d+)\.\s*([^\n*]+?)\*\*\s*\n([\s\S]*?)(?=\n\*\*\d+\.|\n---|$)/g; let m;
+    const steps = []; const re = /\*\*(\d+)\.\s*(.+?)\*\*\s*\n([\s\S]*?)(?=\n\*\*\d+\.|\n##\s|\n---|$)/g; let m;
     while ((m = re.exec(block))) {
-      const step = { n: +m[1], title: m[2].trim(), do: [] };
+      const step = { n: steps.length + 1, title: stripMd(m[2]), do: [] }; // number/key by POSITION — an author's typed numbers can repeat
       m[3].split('\n').map(l => l.trim()).filter(l => /^[*-]\s+/.test(l)).map(l => l.replace(/^[*-]\s+/, '')).forEach(l => {
-        if (/^✅\s*Expect\s*[—-]\s*/.test(l)) step.expect = l.replace(/^✅\s*Expect\s*[—-]\s*/, '').trim();
-        else if (/^❌\s*Fail if\s*[—-]\s*/.test(l)) step.failif = l.replace(/^❌\s*Fail if\s*[—-]\s*/, '').trim();
+        if (/^✅\s*Expect\s*[—–-]\s*/.test(l)) step.expect = l.replace(/^✅\s*Expect\s*[—–-]\s*/, '').trim();
+        else if (/^❌\s*Fail if\s*[—–-]\s*/.test(l)) step.failif = l.replace(/^❌\s*Fail if\s*[—–-]\s*/, '').trim();
         else step.do.push(l);
       });
       if (!step.expect) step.expect = 'It behaves as described.';
@@ -367,7 +367,8 @@
   // Which tickets a tester should work is decided upstream (the sweep classifies ui/backend/mixed and a
   // `manual-qa` sub-issue is authored for the screen-testable ones). Cue QA just lists the manual-qa tickets —
   // no in-app classification. Keep only the active ones (a Done/Canceled sub-issue is off the queue).
-  const isActiveManualQa = i => (labelNames(i.labels) || []).includes('manual-qa') && i.statusType !== 'completed' && i.statusType !== 'canceled';
+  const QA_LABEL = 'manual-qa'; // the one marker the whole pipeline agrees on
+  const isActiveManualQa = i => (labelNames(i.labels) || []).includes(QA_LABEL) && i.statusType !== 'completed' && i.statusType !== 'canceled';
 
   function errText(code) {
     switch (code) {
@@ -393,12 +394,19 @@
     if (!mcpCap) { refreshError = 'nocap'; renderStatus(); return; }
     refreshing = true; refreshError = null; renderStatus();
     try {
+      // The queue is the project's active `manual-qa` tickets. Filter by label SERVER-side so none falls off a
+      // later page; list_issues truncates descriptions, so fetch each full body with get_issue before parsing.
       const res = await mcpCap.callTool(LINEAR_SERVER, 'list_issues',
-        { project: PROJECT_UUID, limit: 100 });
+        { project: PROJECT_UUID, label: QA_LABEL, limit: 100 });
       const payload = res && res.payload;
       const issues = payload && (payload.issues || (Array.isArray(payload) ? payload : null));
       if (!Array.isArray(issues)) throw { code: 'tool_error' }; // unexpected shape: keep current list, show error
-      tickets = issues.filter(isActiveManualQa).map(buildTicket).sort(byPriority);
+      const active = issues.filter(isActiveManualQa); // defensive (a connector ignoring `label`) + drop Done/Canceled
+      const full = await Promise.all(active.map(async i => {
+        try { const g = await mcpCap.callTool(LINEAR_SERVER, 'get_issue', { id: i.id }); const gp = g && g.payload; return (gp && gp.id) ? gp : i; }
+        catch (e) { return i; } // get_issue unavailable/denied → keep the truncated row; buildTicket falls back to baked
+      }));
+      tickets = full.map(buildTicket).sort(byPriority);
       if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
       lastRefreshed = Date.now(); refreshing = false; renderAll();
     } catch (err) {
