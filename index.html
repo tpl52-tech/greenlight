@@ -511,6 +511,8 @@
   let serverRuns = {};     // latest snapshot from db (stays {} in local-only mode)
   let pending = {};        // id -> { 'steps.1':'pass', 'pre.0':true, 'notes.2':'…', 'verdict':'fail' } — writes not yet confirmed by the server
   let runs = {};           // render view = serverRuns deep-merged with the pending overlay
+  let dbNote = '';         // transient "couldn't save" notice (quota full / access revoked)
+  const inflight = {};     // id -> promise: serializes writes per ticket doc (one at a time)
 
   async function getCap(name) {
     try { return window.claude && window.claude.use ? await window.claude.use(name) : null; }
@@ -542,18 +544,25 @@
   function saveLocalRuns() { try { localStorage.setItem('cueqa-pending-v4', JSON.stringify(pending)); } catch (e) {} }
 
   // Record one changed field, show it optimistically (overlay), and send it on its way.
-  function edit(id, path, val, rerender) {
+  function edit(id, path, val) {
     (pending[id] = pending[id] || {})[path] = val;
+    dbNote = '';
     rebuildRuns();
-    if (rerender !== false) { renderQueue(); renderSheet(); }
+    renderQueue(); renderSheet();
     if (db && dbWritable) persistField(id, path, val);
     else saveLocalRuns();
   }
   // One field at a time via update() nested-merge, so concurrent testers don't clobber each
   // other; set() only to create the doc. The pending overlay keeps the edit visible across
   // snapshots until the server confirms it (then onSnapshot drops it).
-  async function persistField(id, path, val, retried) {
+  function persistField(id, path, val, retried) {
     if (!db || !dbWritable) { saveLocalRuns(); return; } // bridge may have died before a scheduled retry fired
+    // chain onto any in-flight write for this doc, so writes to one ticket never overlap (db.d.ts: one write at a time per doc)
+    inflight[id] = Promise.resolve(inflight[id]).catch(() => {}).then(() => writeField(id, path, val, retried));
+    return inflight[id];
+  }
+  async function writeField(id, path, val, retried) {
+    if (!db || !dbWritable) return; // may have flipped while queued; overlay keeps the edit
     const ref = db.doc('runs/' + id);
     try {
       await ref.update(Object.assign({ updatedAt: Date.now() }, patchFor(path, val)));
@@ -564,6 +573,11 @@
         return;
       }
       if (code === 'unavailable' || code === 'resource_exhausted') return; // give up — overlay stays, next edit/snapshot reconciles (resource_exhausted must never loop)
+      if (code === 'quota_exceeded' || code === 'revoked') { // surface it: the tester's result did not save
+        dbNote = code === 'quota_exceeded' ? 'Couldn’t save — the shared database is full. Tell the lead.' : 'Lost write access — your latest change may not have saved.';
+        if (code === 'revoked') dbWritable = false;
+        renderSheet(); return;
+      }
       if (code !== 'invalid_argument') return;
       try { // doc missing (update needs it to exist) — or a read-only viewer. set() is a full replace, so a
             // first-write race on a brand-new doc can clobber (no transactions); rare, and self-heals on the next edit.
@@ -863,7 +877,7 @@
     const roNote = ro ? ' · view-only — ask the lead for edit access to record' : '';
     bar.hidden = false;
     document.getElementById('verdictInner').innerHTML = `
-      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}</div>
+      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}${dbNote ? ' · ⚠ ' + escapeHtml(dbNote) : ''}</div>
       <span class="verdict-spacer"></span>
       <span class="verdict-label">Record result:</span>
       <button class="v-btn pass ${r.verdict === 'pass' ? 'on' : ''}" data-verdict="pass"${ro ? ' disabled' : ''}>Pass</button>
