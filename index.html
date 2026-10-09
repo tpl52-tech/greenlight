@@ -1,0 +1,433 @@
+<title>Cue Tasks</title>
+<style>
+  /* Layout: a calm, centered single column — apple.com restraint applied to a task app.
+     Big SF display headline + Activity-style progress ring, airy rows, pill nav. */
+  :root {
+    --bg: #fbfbfd;
+    --surface: #ffffff;
+    --surface-2: #f2f2f4;
+    --fg: #1d1d1f;
+    --muted: #6e6e73;
+    --faint: #aeaeb2;
+    --separator: rgba(0,0,0,0.08);
+    --hairline: rgba(0,0,0,0.06);
+    --accent: #0071e3;
+    --accent-2: #30a3ff;
+    --nav: rgba(251,251,253,0.72);
+    --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 10px 40px -16px rgba(0,0,0,0.12);
+    --ring: rgba(0,113,227,0.4);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #000000;
+      --surface: #141416;
+      --surface-2: #1f1f22;
+      --fg: #f5f5f7;
+      --muted: #a1a1a6;
+      --faint: #68686d;
+      --separator: rgba(255,255,255,0.12);
+      --hairline: rgba(255,255,255,0.08);
+      --accent: #2997ff;
+      --accent-2: #5ab0ff;
+      --nav: rgba(0,0,0,0.6);
+      --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 14px 46px -16px rgba(0,0,0,0.7);
+      --ring: rgba(41,151,255,0.5);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #000000;
+    --surface: #141416;
+    --surface-2: #1f1f22;
+    --fg: #f5f5f7;
+    --muted: #a1a1a6;
+    --faint: #68686d;
+    --separator: rgba(255,255,255,0.12);
+    --hairline: rgba(255,255,255,0.08);
+    --accent: #2997ff;
+    --accent-2: #5ab0ff;
+    --nav: rgba(0,0,0,0.6);
+    --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 14px 46px -16px rgba(0,0,0,0.7);
+    --ring: rgba(41,151,255,0.5);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+      "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 16px; line-height: 1.47;
+    color: var(--fg); background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  svg { display: block; }
+  button { font: inherit; color: inherit; }
+  ::selection { background: var(--accent); color: #fff; }
+
+  /* ---------- nav ---------- */
+  .nav {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+    display: flex; align-items: center; gap: 16px;
+    height: 52px; padding: 0 clamp(16px, 5vw, 40px);
+    background: var(--nav);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 0.5px solid var(--separator);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600;
+    font-size: 19px; letter-spacing: -0.02em; }
+  .brand .mark {
+    width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
+    background: linear-gradient(145deg, var(--accent-2), var(--accent)); color: #fff;
+  }
+  .brand .mark svg { width: 13px; height: 13px; }
+  .nav-spacer { flex: 1; }
+  .icon-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+    background: transparent; color: var(--muted);
+    display: grid; place-items: center; transition: background 0.15s, color 0.15s;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+  .icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .icon-btn svg { width: 20px; height: 20px; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+    background: linear-gradient(145deg, #c7c7cc, #8e8e93); color: #fff;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.02em; user-select: none;
+  }
+
+  /* ---------- page column ---------- */
+  .page { max-width: 760px; margin: 0 auto; padding: 0 clamp(20px, 6vw, 32px); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    display: flex; align-items: center; justify-content: space-between; gap: 28px;
+    padding-block: clamp(40px, 7vw, 72px) 20px;
+  }
+  .eyebrow {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.055em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 10px;
+  }
+  .title {
+    font-size: clamp(42px, 9vw, 68px); font-weight: 700; letter-spacing: -0.03em;
+    line-height: 1.02; margin: 0; text-wrap: balance;
+  }
+  .subtitle { color: var(--muted); font-size: clamp(17px, 2.6vw, 21px); margin-top: 12px;
+    letter-spacing: -0.01em; }
+  .ring-wrap { flex: none; position: relative; width: 116px; height: 116px; }
+  .ring-wrap svg { width: 116px; height: 116px; transform: rotate(-90deg); }
+  .ring-track { fill: none; stroke: var(--surface-2); stroke-width: 11; }
+  .ring-bar { fill: none; stroke: url(#grad); stroke-width: 11; stroke-linecap: round;
+    transition: stroke-dashoffset 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+  .ring-label {
+    position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+  }
+  .ring-pct { font-size: 25px; font-weight: 700; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums; }
+
+  /* ---------- chips ---------- */
+  .chips {
+    display: flex; gap: 9px; flex-wrap: wrap;
+    padding-block: 8px 26px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: none; cursor: pointer; border-radius: 980px;
+    padding: 8px 15px; font-size: 15px; font-weight: 500; letter-spacing: -0.01em;
+    background: var(--surface-2); color: var(--fg);
+    transition: background 0.15s, color 0.15s, transform 0.1s;
+  }
+  .chip:hover { background: var(--separator); }
+  .chip:active { transform: scale(0.97); }
+  .chip[aria-current="true"] { background: var(--fg); color: var(--bg); }
+  .chip .cdot { width: 8px; height: 8px; border-radius: 50%; }
+  .chip .cnum { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chip[aria-current="true"] .cnum { color: var(--bg); opacity: 0.7; }
+  .chip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+  /* ---------- board ---------- */
+  .board {
+    background: var(--surface); border: 0.5px solid var(--separator);
+    border-radius: 22px; box-shadow: var(--shadow);
+    padding: 6px clamp(8px, 2vw, 14px) 10px; margin-bottom: 40px;
+  }
+  .compose {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px 12px; border-bottom: 0.5px solid var(--hairline);
+  }
+  .compose .plus {
+    flex: none; width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); color: #fff; display: grid; place-items: center;
+  }
+  .compose .plus svg { width: 15px; height: 15px; }
+  .compose input {
+    flex: 1; min-width: 0; border: none; background: none; outline: none;
+    font-size: 17px; letter-spacing: -0.01em; color: var(--fg);
+  }
+  .compose input::placeholder { color: var(--faint); }
+
+  .task-list { display: flex; flex-direction: column; }
+  .task {
+    display: flex; gap: 14px; align-items: flex-start;
+    padding: 15px 12px; border-bottom: 0.5px solid var(--hairline);
+  }
+  .task:last-child { border-bottom: none; }
+  .check {
+    flex: none; width: 23px; height: 23px; margin-top: 1px; padding: 0;
+    border-radius: 50%; border: 1.7px solid var(--faint); background: transparent;
+    cursor: pointer; display: grid; place-items: center; color: #fff;
+    transition: background 0.18s, border-color 0.18s, transform 0.1s;
+  }
+  .check:active { transform: scale(0.88); }
+  .check svg { width: 13px; height: 13px; opacity: 0; transition: opacity 0.18s; }
+  .check:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .task.done .check { background: var(--accent); border-color: var(--accent); }
+  .task.done .check svg { opacity: 1; }
+  .t-body { flex: 1; min-width: 0; }
+  .t-title { font-size: 17px; letter-spacing: -0.012em; line-height: 1.38;
+    display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+  .t-pri { color: #ff9500; font-weight: 700; }
+  .task.done .t-title { color: var(--faint); text-decoration: line-through; }
+  .t-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 3px; font-size: 14px; color: var(--muted); }
+  .t-note { min-width: 0; }
+  .t-list { display: inline-flex; align-items: center; gap: 6px; }
+  .t-list .cdot { width: 7px; height: 7px; border-radius: 50%; }
+  .due { font-weight: 500; }
+  .due.today { color: #ff3b30; }
+  .due.soon { color: var(--accent); }
+  .flag { color: #ff9500; display: inline-grid; place-items: center; }
+  .flag svg { width: 14px; height: 14px; }
+  .task.done .t-meta { color: var(--faint); }
+
+  .done-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 20px 12px 8px; color: var(--muted); font-size: 13px; font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .done-head::after { content: ""; flex: 1; height: 0.5px; background: var(--hairline); }
+  .toggle-done {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font-size: 13px; font-weight: 500;
+  }
+  .empty { text-align: center; color: var(--muted); padding: 56px 20px; }
+  .empty svg { width: 38px; height: 38px; margin: 0 auto 14px; color: var(--faint); }
+
+  .foot {
+    text-align: center; color: var(--faint); font-size: 12px; letter-spacing: -0.005em;
+    padding: 8px 20px 40px;
+  }
+
+  @media (max-width: 620px) {
+    .hero { flex-direction: column-reverse; align-items: flex-start; gap: 20px;
+      padding-block: 30px 12px; }
+    .ring-wrap { align-self: flex-start; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header class="nav">
+  <span class="brand">
+    <span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 6.5"/></svg></span>
+    Cue
+  </span>
+  <span class="nav-spacer"></span>
+  <button class="icon-btn" id="themeBtn" aria-label="Toggle appearance" title="Toggle appearance"></button>
+  <span class="avatar" aria-hidden="true">TL</span>
+</header>
+
+<main class="page">
+  <section class="hero">
+    <div class="hero-text">
+      <div class="eyebrow" id="eyebrow">Thursday · October 8</div>
+      <h1 class="title" id="title">Today</h1>
+      <div class="subtitle" id="subtitle"></div>
+    </div>
+    <div class="ring-wrap" role="img" aria-label="Completion progress" id="ring">
+      <svg viewBox="0 0 116 116">
+        <defs><linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="var(--accent-2)"/><stop offset="1" stop-color="var(--accent)"/>
+        </linearGradient></defs>
+        <circle class="ring-track" cx="58" cy="58" r="50"/>
+        <circle class="ring-bar" id="ringBar" cx="58" cy="58" r="50"/>
+      </svg>
+      <div class="ring-label"><span class="ring-pct" id="ringPct">0%</span></div>
+    </div>
+  </section>
+
+  <div class="chips" id="chips"></div>
+
+  <section class="board">
+    <div class="compose">
+      <span class="plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+      <input id="compose" type="text" placeholder="Add a task" aria-label="Add a task" autocomplete="off">
+    </div>
+    <div class="task-list" id="taskList"></div>
+  </section>
+
+  <footer class="foot">Cue · Designed in California</footer>
+</main>
+
+<script>
+  const S = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const ICON = {
+    check: S('<path d="M5 12.5l4 4 10-10.5"/>'),
+    flag: S('<path d="M5 21V4M5 4.5h11l-2.2 4 2.2 4H5"/>'),
+    sun: S('<circle cx="12" cy="12" r="4.4"/><path d="M12 2.5v2.4M12 19.1v2.4M4.3 4.3l1.7 1.7M18 18l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.3 19.7L6 18M18 6l1.7-1.7"/>'),
+    moon: S('<path d="M20.5 14.8A8.3 8.3 0 1 1 9.2 3.5a6.6 6.6 0 0 0 11.3 11.3z"/>'),
+    inbox: S('<path d="M4 13l2.2-8h11.6L20 13v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M4 13h4l1.4 2.4h5.2L16 13h4"/>'),
+  };
+
+  const filters = [
+    { id:'todo', name:'To Do' },
+    { id:'done', name:'Done' },
+  ];
+  const lists = [
+    { id:'qa',       name:'QA Sprint', color:'#0071e3' },
+    { id:'ship',     name:'Ship List', color:'#34c759' },
+    { id:'personal', name:'Personal',  color:'#af52de' },
+  ];
+  const listById = id => lists.find(l => l.id === id);
+
+  let tasks = [
+    { id:1, title:'Fix RLS leak on profiles table', note:'Anon can read rows despite the policy — flag for Neha.', list:'qa', due:'Today', flagged:true, priority:'high', done:false },
+    { id:2, title:'Run verify sweep on main', note:'Structural + behavioral checks over a read-only role.', list:'qa', due:'Today', flagged:false, done:false },
+    { id:3, title:'Review PR #41 — behavioral RLS check', note:'Signs in as the test login, confirms reads are gated.', list:'qa', due:'Tomorrow', flagged:false, done:false },
+    { id:4, title:'Add regression test for cover-letter PDF', note:'Literal [COMPANY]/[ROLE] substitution must survive.', list:'qa', due:null, flagged:false, done:false },
+    { id:5, title:'Triage flaky typeahead poll', note:'Second school field intermittently empty.', list:'qa', due:null, flagged:false, done:true },
+    { id:6, title:'Tag v0.6 release', note:'', list:'ship', due:'Fri', flagged:false, priority:'high', done:false },
+    { id:7, title:'Update PRD changelog', note:'Note the console rebuild and the removed digest.', list:'ship', due:'Fri', flagged:false, done:false },
+    { id:8, title:'Smoke-test onboarding flow', note:'Fresh account to first task in under a minute.', list:'ship', due:null, flagged:true, done:false },
+    { id:9, title:'Renew OPT paperwork', note:'The deadline is firm.', list:'personal', due:'Oct 15', flagged:true, done:false },
+    { id:10, title:'Reply to recruiter email', note:'', list:'personal', due:'Tomorrow', flagged:false, done:false },
+    { id:11, title:'Book flight home for break', note:'', list:'personal', due:null, flagged:false, done:false },
+  ];
+  let nextId = 12;
+  let current = 'todo';
+  const C = 2 * Math.PI * 50;
+
+  function loadPrefs() {
+    try {
+      const t = localStorage.getItem('cue-theme');
+      if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+      const done = JSON.parse(localStorage.getItem('cue-done') || 'null');
+      if (Array.isArray(done)) tasks.forEach(t => { if (t.id < nextId) t.done = done.includes(t.id); });
+    } catch (e) {}
+  }
+  function saveDone() {
+    try { localStorage.setItem('cue-done', JSON.stringify(tasks.filter(t => t.done).map(t => t.id))); } catch (e) {}
+  }
+
+  function matches(t, id) {
+    if (id === 'done') return t.done;
+    return !t.done; // 'todo'
+  }
+  const countIn = id => tasks.filter(t => matches(t, id)).length;
+  const label = id => (filters.find(f => f.id === id) || listById(id) || { name:'Tasks' }).name;
+  const escapeHtml = s => s.replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+  function renderChips() {
+    const chipHTML = x => {
+      const dot = x.color ? `<span class="cdot" style="background:${x.color}"></span>` : '';
+      return `<button class="chip" data-list="${x.id}" aria-current="${current === x.id}">${dot}${x.name}<span class="cnum">${countIn(x.id)}</span></button>`;
+    };
+    document.getElementById('chips').innerHTML = filters.map(chipHTML).join('');
+  }
+
+  function dueClass(due) {
+    if (due === 'Today') return 'today';
+    if (due === 'Tomorrow' || due === 'Fri') return 'soon';
+    return '';
+  }
+  function taskHTML(t) {
+    const list = listById(t.list);
+    const meta = [];
+    if (t.note) meta.push(`<span class="t-note">${escapeHtml(t.note)}</span>`);
+    if (t.due) meta.push(`<span class="due ${dueClass(t.due)}">${t.due}</span>`);
+    if (list) meta.push(`<span class="t-list"><span class="cdot" style="background:${list.color}"></span>${list.name}</span>`);
+    if (t.flagged) meta.push(`<span class="flag">${ICON.flag}</span>`);
+    const pri = t.priority === 'high' && !t.done ? '<span class="t-pri">!</span>' : '';
+    return `<div class="task ${t.done ? 'done' : ''}">
+      <button class="check" data-id="${t.id}" aria-label="${t.done ? 'Mark incomplete' : 'Mark complete'}" aria-pressed="${t.done}">${ICON.check}</button>
+      <div class="t-body">
+        <div class="t-title">${pri}<span>${escapeHtml(t.title)}</span></div>
+        ${meta.length ? `<div class="t-meta">${meta.join('')}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function renderHero() {
+    document.getElementById('title').textContent = label(current);
+    const total = tasks.length;
+    const doneCount = tasks.filter(t => t.done).length;
+    const todoCount = total - doneCount;
+    const pct = total ? Math.round((doneCount / total) * 100) : 0;
+    document.getElementById('subtitle').textContent = current === 'done'
+      ? (doneCount ? `${doneCount} completed` : 'Nothing completed yet')
+      : (todoCount ? `${todoCount} remaining` : 'All caught up');
+    document.getElementById('ringPct').textContent = pct + '%';
+    document.getElementById('ringBar').style.strokeDasharray = C;
+    document.getElementById('ringBar').style.strokeDashoffset = C * (1 - pct / 100);
+  }
+
+  function renderList() {
+    const match = tasks.filter(t => matches(t, current));
+    const el = document.getElementById('taskList');
+    if (!match.length) {
+      const msg = current === 'done' ? 'Nothing completed yet.' : 'All done. Nice.';
+      const icon = current === 'done' ? ICON.inbox : ICON.check;
+      el.innerHTML = `<div class="empty">${icon}<div>${msg}</div></div>`;
+      return;
+    }
+    el.innerHTML = match.map(taskHTML).join('');
+  }
+
+  function renderAll() { renderChips(); renderHero(); renderList(); updateThemeBtn(); }
+
+  document.body.addEventListener('click', e => {
+    const chip = e.target.closest('.chip[data-list]');
+    if (chip) { current = chip.getAttribute('data-list'); renderAll(); return; }
+    const chk = e.target.closest('.check[data-id]');
+    if (chk) {
+      const t = tasks.find(x => x.id === +chk.getAttribute('data-id'));
+      if (t) { t.done = !t.done; saveDone(); renderHero(); renderList(); renderChips(); }
+    }
+  });
+
+  const compose = document.getElementById('compose');
+  compose.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const val = compose.value.trim();
+    if (!val) return;
+    tasks.push({ id: nextId++, title: val, note:'', list:null, due:null, flagged:false, done:false });
+    compose.value = '';
+    current = 'todo';
+    renderAll();
+  });
+
+  function currentTheme() {
+    const set = document.documentElement.getAttribute('data-theme');
+    return set || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  }
+  function updateThemeBtn() {
+    document.getElementById('themeBtn').innerHTML = currentTheme() === 'dark' ? ICON.sun : ICON.moon;
+  }
+  document.getElementById('themeBtn').addEventListener('click', () => {
+    const next = currentTheme() === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('cue-theme', next); } catch (e) {}
+    updateThemeBtn();
+  });
+
+  // live date in the eyebrow
+  try {
+    document.getElementById('eyebrow').textContent =
+      new Date().toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
+  } catch (e) {}
+
+  loadPrefs();
+  renderAll();
+</script>
