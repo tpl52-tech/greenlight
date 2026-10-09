@@ -525,6 +525,7 @@
   }
   function applyPath(obj, path, val) { const [a, b] = path.split('.'); if (b === undefined) obj[a] = val; else { obj[a] = obj[a] || {}; obj[a][b] = val; } }
   function atPath(obj, path) { const [a, b] = path.split('.'); const v = obj ? obj[a] : undefined; return b === undefined ? v : (v ? v[b] : undefined); }
+  function patchFor(path, val) { const [a, b] = path.split('.'); return b === undefined ? { [a]: val } : { [a]: { [b]: val } }; } // single builder for the 2-level paths
   function rebuildRuns() { // merge the pending overlay over the server snapshot
     const merged = {};
     new Set([...Object.keys(serverRuns), ...Object.keys(pending)]).forEach(id => {
@@ -551,19 +552,21 @@
   // One field at a time via update() nested-merge, so concurrent testers don't clobber each
   // other; set() only to create the doc. The pending overlay keeps the edit visible across
   // snapshots until the server confirms it (then onSnapshot drops it).
-  async function persistField(id, path, val) {
+  async function persistField(id, path, val, retried) {
+    if (!db || !dbWritable) { saveLocalRuns(); return; } // bridge may have died before a scheduled retry fired
     const ref = db.doc('runs/' + id);
-    const [a, b] = path.split('.');
-    const patch = (b === undefined) ? { [a]: val } : { [a]: { [b]: val } };
     try {
-      await ref.update(Object.assign({ updatedAt: Date.now() }, patch));
+      await ref.update(Object.assign({ updatedAt: Date.now() }, patchFor(path, val)));
     } catch (err) {
       const code = err && err.code;
-      if (code === 'unavailable' || code === 'resource_exhausted') { // transient: one retry, overlay survives meanwhile
-        setTimeout(() => { if (pending[id] && pending[id][path] === val) persistField(id, path, val); }, 1500); return;
+      if (code === 'unavailable' && !retried) { // exactly one retry, jittered; the overlay keeps the edit visible meanwhile
+        setTimeout(() => { if (db && dbWritable && pending[id] && pending[id][path] === val) persistField(id, path, val, true); }, 800 + Math.random() * 800);
+        return;
       }
-      if (code !== 'invalid_argument') return; // overlay stays; a later edit or snapshot reconciles
-      try { // doc missing (update needs it to exist) — or a read-only viewer
+      if (code === 'unavailable' || code === 'resource_exhausted') return; // give up — overlay stays, next edit/snapshot reconciles (resource_exhausted must never loop)
+      if (code !== 'invalid_argument') return;
+      try { // doc missing (update needs it to exist) — or a read-only viewer. set() is a full replace, so a
+            // first-write race on a brand-new doc can clobber (no transactions); rare, and self-heals on the next edit.
         const r = runs[id] || {};
         await ref.set({ pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict || null, updatedAt: Date.now() });
       } catch (e2) {
@@ -587,7 +590,7 @@
       db.collection('runs').onSnapshot(
         snap => {
           const next = {};
-          snap.docs.forEach(d => { if (d.exists) { try { next[d.id] = JSON.parse(JSON.stringify(d.data())); } catch (e) {} } });
+          snap.docs.forEach(d => { if (d.exists) next[d.id] = d.data(); }); // frozen; only ever read via atPath, and rebuildRuns clones before mutating
           serverRuns = next;
           for (const id in pending) { // drop overlay entries the server now reflects
             for (const path in pending[id]) { const want = pending[id][path], got = atPath(serverRuns[id], path); if (got === want || (got == null && want == null)) delete pending[id][path]; }
@@ -786,7 +789,7 @@
     const done = checkedCount(t), total = t.steps.length;
     const pct = total ? Math.round((done / total) * 100) : 0;
     const ro = readOnly();
-    const url = /^https?:\/\//.test(t.url || '') ? t.url : '#';
+    const url = /^https:\/\//.test(t.url || '') ? t.url : '#';
 
     const pre = t.pre.map((p, i) => `
       <button class="pre-row ${r.pre[i] ? 'on' : ''}" data-pre="${i}"${ro ? ' disabled' : ''}>
@@ -900,6 +903,7 @@
   document.body.addEventListener('input', e => {
     const nt = e.target.closest('.step-note');
     if (nt) { // overlay the note locally without a re-render (keeps focus/caret), persist debounced
+      if (readOnly()) return;
       const id = current, n = nt.getAttribute('data-note'), val = nt.value;
       (pending[id] = pending[id] || {})['notes.' + n] = val; rebuildRuns();
       clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (db && dbWritable) persistField(id, 'notes.' + n, val); else saveLocalRuns(); }, 500);
