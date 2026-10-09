@@ -111,7 +111,7 @@
     color: var(--muted); padding: 6px 8px 4px; }
   .who-opt { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none;
     background: none; cursor: pointer; border-radius: 8px; padding: 8px; font-size: 14px; color: var(--fg); }
-  .who-opt:hover { background: var(--hover); }
+  .who-opt:hover { background: var(--surface-2); }
   .who-opt .check { margin-left: auto; color: var(--accent); opacity: 0; display: grid; place-items: center; }
   .who-opt .check svg { width: 16px; height: 16px; }
   .who-opt[aria-current="true"] .check { opacity: 1; }
@@ -370,8 +370,8 @@
     'Enaika Kishnani':'#0071e3', 'Hyunsuh':'#af52de', 'Kenan Tat':'#ff9500',
     'Willow Chen':'#34c759', 'Neha Bommireddy':'#ff2d55', 'Lahari Bandaru':'#5e5ce6',
   };
-  const avaHTML = (name, cls='ava') => `<span class="${cls}" style="background:${PEOPLE[name] || '#8e8e93'}">${escapeHtml((name||'?')[0])}</span>`;
   const avaFor = (color, ch, cls='ava') => `<span class="${cls}" style="background:${color}">${escapeHtml(ch)}</span>`;
+  const avaHTML = (name, cls='ava') => avaFor(PEOPLE[name] || '#8e8e93', (name || '?')[0], cls);
 
   // The QA testers (the non-technical team). Which one "you" are is a per-viewer choice saved in this browser.
   const TESTERS = [
@@ -379,8 +379,9 @@
     { id:'dana',  name:'Dana',  color:'#0071e3' },
   ];
   const testerById = id => TESTERS.find(t => t.id === id);
+  const testerName = id => (testerById(id) || {}).name || id; // display name, else the raw id (escaped at render)
+  const verdictCredit = r => r.verdict && r.verdictBy ? ' · recorded by ' + escapeHtml(testerName(r.verdictBy)) + (r.verdictAt ? ' ' + timeAgo(r.verdictAt) : '') : '';
   let me = null; // this viewer's tester id
-  const meName = () => { const t = testerById(me); return t ? t.name : null; };
 
   // ReUse App — Fall 2026, "Verifying" column
   const PROJECT_UUID = 'ee39f4b9-275e-40c1-a55e-1ead80ec5a94';
@@ -539,7 +540,7 @@
   }
   function applyPath(obj, path, val) { const [a, b] = path.split('.'); if (b === undefined) obj[a] = val; else { obj[a] = obj[a] || {}; obj[a][b] = val; } }
   function atPath(obj, path) { const [a, b] = path.split('.'); const v = obj ? obj[a] : undefined; return b === undefined ? v : (v ? v[b] : undefined); }
-  function patchFor(path, val) { const [a, b] = path.split('.'); return b === undefined ? { [a]: val } : { [a]: { [b]: val } }; } // single builder for the 2-level paths
+  function patchObj(patch) { const out = {}; for (const path in patch) applyPath(out, path, patch[path]); return out; } // flat {path:val} -> one nested-merge object for update()
   function rebuildRuns() { // merge the pending overlay over the server snapshot
     const merged = {};
     new Set([...Object.keys(serverRuns), ...Object.keys(pending)]).forEach(id => {
@@ -555,43 +556,35 @@
   function loadLocalRuns() { try { const s = JSON.parse(localStorage.getItem('cueqa-pending-v4') || 'null'); if (s && typeof s === 'object') pending = s; } catch (e) {} rebuildRuns(); }
   function saveLocalRuns() { try { localStorage.setItem('cueqa-pending-v4', JSON.stringify(pending)); } catch (e) {} }
 
-  // Record one changed field, show it optimistically (overlay), and send it on its way.
-  function edit(id, path, val) {
-    (pending[id] = pending[id] || {})[path] = val;
-    dbNote = '';
-    rebuildRuns();
-    renderQueue(); renderSheet();
-    if (db && dbWritable) persistField(id, path, val);
-    else saveLocalRuns();
-  }
-  // Several fields in one gesture (e.g. a verdict + who recorded it + when), rendered once.
-  function editFields(id, fields) {
+  // Record a change (one or more fields) as an optimistic overlay and send it as a single write.
+  // `patch` is a flat map of path -> value: {'steps.1':'pass'}, {'pre.0':true}, or {verdict, verdictBy, verdictAt}.
+  function edit(id, patch) {
     pending[id] = pending[id] || {};
-    for (const k in fields) pending[id][k] = fields[k];
+    for (const k in patch) pending[id][k] = patch[k];
     dbNote = '';
     rebuildRuns();
     renderQueue(); renderSheet();
-    if (db && dbWritable) { for (const k in fields) persistField(id, k, fields[k]); }
+    if (db && dbWritable) persistFields(id, patch);
     else saveLocalRuns();
   }
-  // One field at a time via update() nested-merge, so concurrent testers don't clobber each
-  // other; set() only to create the doc. The pending overlay keeps the edit visible across
-  // snapshots until the server confirms it (then onSnapshot drops it).
-  function persistField(id, path, val, retried) {
+  // The whole gesture in ONE update() (nested-merge), so a verdict + who + when land atomically and writes to
+  // a ticket never overlap (chained on inflight[id]). set() only to create the doc. The pending overlay keeps
+  // the edit visible across snapshots until the server confirms it (then onSnapshot drops it).
+  function persistFields(id, patch, retried) {
     if (!db || !dbWritable) { saveLocalRuns(); return; } // bridge may have died before a scheduled retry fired
-    // chain onto any in-flight write for this doc, so writes to one ticket never overlap (db.d.ts: one write at a time per doc)
-    inflight[id] = Promise.resolve(inflight[id]).catch(() => {}).then(() => writeField(id, path, val, retried));
+    inflight[id] = Promise.resolve(inflight[id]).catch(() => {}).then(() => writeFields(id, patch, retried));
     return inflight[id];
   }
-  async function writeField(id, path, val, retried) {
+  const patchStillPending = (id, patch) => !!pending[id] && Object.keys(patch).every(k => pending[id][k] === patch[k]);
+  async function writeFields(id, patch, retried) {
     if (!db || !dbWritable) return; // may have flipped while queued; overlay keeps the edit
     const ref = db.doc('runs/' + id);
     try {
-      await ref.update(Object.assign({ updatedAt: Date.now() }, patchFor(path, val)));
+      await ref.update(Object.assign({ updatedAt: Date.now() }, patchObj(patch)));
     } catch (err) {
       const code = err && err.code;
       if (code === 'unavailable' && !retried) { // exactly one retry, jittered; the overlay keeps the edit visible meanwhile
-        setTimeout(() => { if (db && dbWritable && pending[id] && pending[id][path] === val) persistField(id, path, val, true); }, 800 + Math.random() * 800);
+        setTimeout(() => { if (db && dbWritable && patchStillPending(id, patch)) persistFields(id, patch, true); }, 800 + Math.random() * 800);
         return;
       }
       if (code === 'unavailable' || code === 'resource_exhausted') return; // give up — overlay stays, next edit/snapshot reconciles (resource_exhausted must never loop)
@@ -604,7 +597,7 @@
       try { // doc missing (update needs it to exist) — or a read-only viewer. set() is a full replace, so a
             // first-write race on a brand-new doc can clobber (no transactions); rare, and self-heals on the next edit.
         const r = runs[id] || {};
-        await ref.set({ pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict || null, updatedAt: Date.now() });
+        await ref.set({ pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict || null, verdictBy: r.verdictBy || null, verdictAt: r.verdictAt || null, updatedAt: Date.now() });
       } catch (e2) {
         if (e2 && e2.code === 'invalid_argument') { dbWritable = false; renderAll(); } // read-only: lock the controls
       }
@@ -817,7 +810,7 @@
       const rb = readRun(t.id);
       const done = checkedCount(t), total = t.steps.length;
       const prio = t.priority === 'high' ? '<span class="pdot" title="High priority"></span>' : '';
-      const by = rb.verdict && rb.verdictBy ? ' · ' + escapeHtml((testerById(rb.verdictBy) || {}).name || rb.verdictBy) : '';
+      const by = rb.verdict && rb.verdictBy ? ' · ' + escapeHtml(testerName(rb.verdictBy)) : '';
       return `<button class="q-card" data-id="${escapeHtml(t.id)}" aria-current="${current === t.id}">
         <div class="q-top">
           <span class="q-id">${prio}${escapeHtml(t.id)}</span>
@@ -916,7 +909,7 @@
     const roNote = ro ? ' · view-only — ask the lead for edit access to record' : '';
     bar.hidden = false;
     document.getElementById('verdictInner').innerHTML = `
-      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}${r.verdict && r.verdictBy ? ' · recorded by ' + escapeHtml((testerById(r.verdictBy) || {}).name || r.verdictBy) + (r.verdictAt ? ' ' + timeAgo(r.verdictAt) : '') : ''}${dbNote ? ' · ⚠ ' + escapeHtml(dbNote) : ''}</div>
+      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}${verdictCredit(r)}${dbNote ? ' · ⚠ ' + escapeHtml(dbNote) : ''}</div>
       <span class="verdict-spacer"></span>
       <span class="verdict-label">Record result:</span>
       <button class="v-btn pass ${r.verdict === 'pass' ? 'on' : ''}" data-verdict="pass"${ro ? ' disabled' : ''}>Pass</button>
@@ -938,6 +931,7 @@
     const menu = document.getElementById('whoMenu'), btn = document.getElementById('whoBtn');
     const show = open === undefined ? menu.hidden : open;
     menu.hidden = !show; btn.setAttribute('aria-expanded', String(show));
+    if (show) { const first = menu.querySelector('.who-opt'); if (first) first.focus(); }
   }
 
   function renderAll() { renderQueue(); renderSheet(); updateThemeBtn(); renderWho(); }
@@ -964,14 +958,14 @@
 
     if (readOnly()) return; // controls render disabled; this guards the data-editing branches only
     const pre = e.target.closest('.pre-row');
-    if (pre) { const i = pre.getAttribute('data-pre'); edit(current, 'pre.' + i, !readRun(current).pre[i]); return; }
+    if (pre) { const i = pre.getAttribute('data-pre'); edit(current, { ['pre.' + i]: !readRun(current).pre[i] }); return; }
     const rb = e.target.closest('.res-btn');
-    if (rb) { const n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); edit(current, 'steps.' + n, readRun(current).steps[n] === v ? null : v); return; }
+    if (rb) { const n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); edit(current, { ['steps.' + n]: readRun(current).steps[n] === v ? null : v }); return; }
     const vb = e.target.closest('.v-btn');
     if (vb) {
       if (!me) { toggleWhoMenu(true); return; } // record who's signing off before a verdict
       const v = vb.getAttribute('data-verdict'), nv = readRun(current).verdict === v ? null : v;
-      editFields(current, { verdict: nv, verdictBy: nv ? me : null, verdictAt: nv ? Date.now() : null });
+      edit(current, { verdict: nv, verdictBy: nv ? me : null, verdictAt: nv ? Date.now() : null });
       return;
     }
   });
@@ -983,7 +977,7 @@
       if (readOnly()) return;
       const id = current, n = nt.getAttribute('data-note'), val = nt.value;
       (pending[id] = pending[id] || {})['notes.' + n] = val; rebuildRuns();
-      clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (db && dbWritable) persistField(id, 'notes.' + n, val); else saveLocalRuns(); }, 500);
+      clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (db && dbWritable) persistFields(id, { ['notes.' + n]: val }); else saveLocalRuns(); }, 500);
     }
   });
 
@@ -999,6 +993,10 @@
     document.documentElement.setAttribute('data-theme', next);
     try { localStorage.setItem('cueqa-theme', next); } catch (e) {}
     updateThemeBtn();
+  });
+
+  document.addEventListener('keydown', e => { // Escape closes the identity menu and returns focus to its button
+    if (e.key === 'Escape' && !document.getElementById('whoMenu').hidden) { toggleWhoMenu(false); document.getElementById('whoBtn').focus(); }
   });
 
   // ---------- boot ----------
