@@ -43,7 +43,22 @@ light up when the page is opened as a **Claude Artifact**:
   same pass/fail state. Testers need **edit (Contributor) access** to record
   results; view-only members see a read-only run sheet.
 
-Served as a plain file or on GitHub Pages (no `window.claude`), Cue QA still
-works, but refresh is unavailable and results are kept per-browser in
-`localStorage`. A deployed, team-shared version would wire results to the
-project's own Supabase instead.
+## On the public site (GitHub Pages)
+
+The repo is published at **https://tpl52-tech.github.io/greenlight/** — a no-login,
+anyone-with-the-link version. There's no Claude runtime there, so Cue QA runs on a
+different backend:
+
+- **Shared results via Supabase.** It reads/writes the `qa_runs` table (see
+  `supabase/qa_runs.sql`) with the ReUse project's publishable anon key and subscribes to
+  Realtime, so testers see each other's pass/fail live. Results persist and sync — no
+  claude.ai account needed. If the table or network is unreachable it falls back to
+  per-browser `localStorage`.
+- **Queue is the baked snapshot.** The live `manual-qa` Linear queue + ↻ Refresh need the
+  Linear connector, which only exists on the Claude Artifact — so the public site shows the
+  built-in tickets.
+
+The security boundary is RLS: anon may read/insert/update **`qa_runs` only** (no delete),
+nothing else in the schema. The anon key is public by design (it already ships in the mobile
+app). The **Claude Artifact** build is the inverse — live Linear queue + the shared `db`,
+shared with the org from the artifact's Share menu.
