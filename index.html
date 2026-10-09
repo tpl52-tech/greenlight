@@ -47,6 +47,9 @@
   }
 
   * { box-sizing: border-box; }
+  /* The `hidden` attribute must win over any class that sets `display` (e.g. .who-menu,
+     .refresh-btn) — author `display` otherwise overrides the UA [hidden]{display:none}. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
     margin: 0; overflow: hidden;
