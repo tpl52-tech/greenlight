@@ -92,7 +92,29 @@
   .icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
   .icon-btn svg { width: 19px; height: 19px; }
   .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
-    background: linear-gradient(145deg, #c7c7cc, #8e8e93); color: #fff; font-size: 12px; font-weight: 600; }
+    background: linear-gradient(145deg, #c7c7cc, #8e8e93); color: #fff; font-size: 12px; font-weight: 600; flex: none; }
+
+  /* who-am-I picker */
+  .who-wrap { position: relative; }
+  .who-btn { display: inline-flex; align-items: center; gap: 8px; border: 0.5px solid var(--separator);
+    background: var(--surface-2); color: var(--fg); border-radius: 980px; padding: 4px 10px 4px 5px; cursor: pointer;
+    font-size: 13px; font-weight: 500; transition: border-color 0.15s; }
+  .who-btn:hover { border-color: var(--faint); }
+  .who-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .who-btn .chev { width: 14px; height: 14px; color: var(--muted); margin-left: -2px; }
+  .who-btn.unset { color: var(--accent); font-weight: 600; }
+  .ava { flex: none; }
+  .who-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; min-width: 180px;
+    background: var(--surface); border: 0.5px solid var(--separator); border-radius: 12px;
+    box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .who-menu .who-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); padding: 6px 8px 4px; }
+  .who-opt { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none;
+    background: none; cursor: pointer; border-radius: 8px; padding: 8px; font-size: 14px; color: var(--fg); }
+  .who-opt:hover { background: var(--hover); }
+  .who-opt .check { margin-left: auto; color: var(--accent); opacity: 0; display: grid; place-items: center; }
+  .who-opt .check svg { width: 16px; height: 16px; }
+  .who-opt[aria-current="true"] .check { opacity: 1; }
 
   /* ---- workspace ---- */
   .workspace { flex: 1; min-height: 0; display: flex; }
@@ -296,7 +318,10 @@
       <input id="search" type="text" placeholder="Search tickets" aria-label="Search tickets" autocomplete="off">
     </label>
     <button class="icon-btn" id="themeBtn" aria-label="Toggle appearance" title="Toggle appearance"></button>
-    <span class="avatar" aria-hidden="true">TL</span>
+    <div class="who-wrap">
+      <button class="who-btn" id="whoBtn" aria-haspopup="true" aria-expanded="false" aria-label="Choose who you are"></button>
+      <div class="who-menu" id="whoMenu" hidden></div>
+    </div>
   </header>
 
   <div class="workspace" id="workspace" data-view="list">
@@ -346,6 +371,16 @@
     'Willow Chen':'#34c759', 'Neha Bommireddy':'#ff2d55', 'Lahari Bandaru':'#5e5ce6',
   };
   const avaHTML = (name, cls='ava') => `<span class="${cls}" style="background:${PEOPLE[name] || '#8e8e93'}">${escapeHtml((name||'?')[0])}</span>`;
+  const avaFor = (color, ch, cls='ava') => `<span class="${cls}" style="background:${color}">${escapeHtml(ch)}</span>`;
+
+  // The QA testers (the non-technical team). Which one "you" are is a per-viewer choice saved in this browser.
+  const TESTERS = [
+    { id:'renee', name:'Renee', color:'#ff9500' },
+    { id:'dana',  name:'Dana',  color:'#0071e3' },
+  ];
+  const testerById = id => TESTERS.find(t => t.id === id);
+  let me = null; // this viewer's tester id
+  const meName = () => { const t = testerById(me); return t ? t.name : null; };
 
   // ReUse App — Fall 2026, "Verifying" column
   const PROJECT_UUID = 'ee39f4b9-275e-40c1-a55e-1ead80ec5a94';
@@ -500,7 +535,7 @@
   const EMPTY_RUN = Object.freeze({ pre: Object.freeze({}), steps: Object.freeze({}), notes: Object.freeze({}), verdict: undefined });
   function readRun(id) { // read-only view for render + status; never creates or mutates state
     const r = runs[id];
-    return r ? { pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict } : EMPTY_RUN;
+    return r ? { pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict, verdictBy: r.verdictBy, verdictAt: r.verdictAt } : EMPTY_RUN;
   }
   function applyPath(obj, path, val) { const [a, b] = path.split('.'); if (b === undefined) obj[a] = val; else { obj[a] = obj[a] || {}; obj[a][b] = val; } }
   function atPath(obj, path) { const [a, b] = path.split('.'); const v = obj ? obj[a] : undefined; return b === undefined ? v : (v ? v[b] : undefined); }
@@ -527,6 +562,16 @@
     rebuildRuns();
     renderQueue(); renderSheet();
     if (db && dbWritable) persistField(id, path, val);
+    else saveLocalRuns();
+  }
+  // Several fields in one gesture (e.g. a verdict + who recorded it + when), rendered once.
+  function editFields(id, fields) {
+    pending[id] = pending[id] || {};
+    for (const k in fields) pending[id][k] = fields[k];
+    dbNote = '';
+    rebuildRuns();
+    renderQueue(); renderSheet();
+    if (db && dbWritable) { for (const k in fields) persistField(id, k, fields[k]); }
     else saveLocalRuns();
   }
   // One field at a time via update() nested-merge, so concurrent testers don't clobber each
@@ -769,8 +814,10 @@
     if (!list.length) { el.innerHTML = `<div style="color:var(--muted);font-size:14px;padding:24px 8px;text-align:center">No tickets match.</div>`; return; }
     el.innerHTML = list.map(t => {
       const st = statusOf(t.id);
+      const rb = readRun(t.id);
       const done = checkedCount(t), total = t.steps.length;
       const prio = t.priority === 'high' ? '<span class="pdot" title="High priority"></span>' : '';
+      const by = rb.verdict && rb.verdictBy ? ' · ' + escapeHtml((testerById(rb.verdictBy) || {}).name || rb.verdictBy) : '';
       return `<button class="q-card" data-id="${escapeHtml(t.id)}" aria-current="${current === t.id}">
         <div class="q-top">
           <span class="q-id">${prio}${escapeHtml(t.id)}</span>
@@ -778,7 +825,7 @@
         </div>
         <div class="q-name">${escapeHtml(t.title)}</div>
         <div class="q-bottom">
-          <span class="q-steps">${done}/${total} steps</span>
+          <span class="q-steps">${done}/${total} steps${by}</span>
           <span class="who">${avaHTML(t.assignee)} ${escapeHtml((t.assignee || '').split(' ')[0])}</span>
         </div>
       </button>`;
@@ -869,7 +916,7 @@
     const roNote = ro ? ' · view-only — ask the lead for edit access to record' : '';
     bar.hidden = false;
     document.getElementById('verdictInner').innerHTML = `
-      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}${dbNote ? ' · ⚠ ' + escapeHtml(dbNote) : ''}</div>
+      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}${r.verdict && r.verdictBy ? ' · recorded by ' + escapeHtml((testerById(r.verdictBy) || {}).name || r.verdictBy) + (r.verdictAt ? ' ' + timeAgo(r.verdictAt) : '') : ''}${dbNote ? ' · ⚠ ' + escapeHtml(dbNote) : ''}</div>
       <span class="verdict-spacer"></span>
       <span class="verdict-label">Record result:</span>
       <button class="v-btn pass ${r.verdict === 'pass' ? 'on' : ''}" data-verdict="pass"${ro ? ' disabled' : ''}>Pass</button>
@@ -878,7 +925,22 @@
     `;
   }
 
-  function renderAll() { renderQueue(); renderSheet(); updateThemeBtn(); }
+  const CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+  function renderWho() {
+    const btn = document.getElementById('whoBtn');
+    const t = testerById(me);
+    if (t) { btn.classList.remove('unset'); btn.innerHTML = avaFor(t.color, t.name[0]) + '<span>' + escapeHtml(t.name) + '</span>' + CHEV; }
+    else { btn.classList.add('unset'); btn.innerHTML = '<span>Sign in</span>' + CHEV; }
+    document.getElementById('whoMenu').innerHTML = '<div class="who-head">You are testing as</div>' +
+      TESTERS.map(x => `<button class="who-opt" data-tester="${x.id}" aria-current="${me === x.id}">${avaFor(x.color, x.name[0])}<span>${escapeHtml(x.name)}</span><span class="check">${ICON.check}</span></button>`).join('');
+  }
+  function toggleWhoMenu(open) {
+    const menu = document.getElementById('whoMenu'), btn = document.getElementById('whoBtn');
+    const show = open === undefined ? menu.hidden : open;
+    menu.hidden = !show; btn.setAttribute('aria-expanded', String(show));
+  }
+
+  function renderAll() { renderQueue(); renderSheet(); updateThemeBtn(); renderWho(); }
 
   // ---------- interactions ----------
   function selectTicket(id) {
@@ -889,6 +951,10 @@
   }
 
   document.body.addEventListener('click', e => {
+    if (e.target.closest('#whoBtn')) { toggleWhoMenu(); return; }
+    const whoOpt = e.target.closest('.who-opt');
+    if (whoOpt) { me = whoOpt.getAttribute('data-tester'); try { localStorage.setItem('cueqa-me', me); } catch (e2) {} toggleWhoMenu(false); renderWho(); renderSheet(); return; }
+    if (!e.target.closest('.who-wrap')) toggleWhoMenu(false); // click anywhere else closes the menu, then falls through
     if (e.target.closest('#refreshBtn')) { refreshTickets(); return; }
     const qc = e.target.closest('.q-card');
     if (qc) { selectTicket(qc.getAttribute('data-id')); return; }
@@ -902,7 +968,12 @@
     const rb = e.target.closest('.res-btn');
     if (rb) { const n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); edit(current, 'steps.' + n, readRun(current).steps[n] === v ? null : v); return; }
     const vb = e.target.closest('.v-btn');
-    if (vb) { const v = vb.getAttribute('data-verdict'); edit(current, 'verdict', readRun(current).verdict === v ? null : v); return; }
+    if (vb) {
+      if (!me) { toggleWhoMenu(true); return; } // record who's signing off before a verdict
+      const v = vb.getAttribute('data-verdict'), nv = readRun(current).verdict === v ? null : v;
+      editFields(current, { verdict: nv, verdictBy: nv ? me : null, verdictAt: nv ? Date.now() : null });
+      return;
+    }
   });
 
   let noteTimer = null;
@@ -932,6 +1003,7 @@
 
   // ---------- boot ----------
   try { const th = localStorage.getItem('cueqa-theme'); if (th === 'dark' || th === 'light') document.documentElement.setAttribute('data-theme', th); } catch (e) {}
+  try { const m = localStorage.getItem('cueqa-me'); if (testerById(m)) me = m; } catch (e) {}
   renderAll();
   initDb();
   initUser();
