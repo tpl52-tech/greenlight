@@ -29,6 +29,16 @@
   const PROJECT_UUID = 'ee39f4b9-275e-40c1-a55e-1ead80ec5a94';
   const LINEAR_SERVER = 'Linear';
 
+  // Shared results on the PUBLIC host (GitHub Pages / any plain host, where there's no Claude runtime): the
+  // app points at the ReUse project's Supabase. URL + publishable anon key are PUBLIC by design (the same key
+  // already ships in the mobile app); RLS lets anon read/insert/update `qa_runs` only. On the Claude Artifact
+  // (window.claude present) this is unused — it keeps the shared `db` + Linear `mcp`, whose sandbox blocks
+  // external calls.
+  const SUPABASE_URL = 'https://ryrqlzfneivppeelxsqp.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_Iy2Y8xpVxEGD3T208QbYmA_zMyzGBq6';
+  const ON_ARTIFACT = !!(window.claude && window.claude.use);
+  const SUPA_ENABLED = !ON_ARTIFACT && !!SUPABASE_URL && !!SUPABASE_ANON_KEY;
+
   // ---------- baked run sheets (resting state; refreshed from Linear) ----------
   const INITIAL_TICKETS = [
     {
@@ -165,7 +175,8 @@
   let serverRuns = {};     // latest snapshot from db (stays {} in local-only mode)
   let pending = {};        // id -> { 'steps.1':'pass', 'pre.0':true, 'notes.2':'…', 'verdict':'fail' } — writes not yet confirmed by the server
   let runs = {};           // render view = serverRuns deep-merged with the pending overlay
-  let dbNote = '';         // transient "couldn't save" notice (quota full / access revoked)
+  let dbNote = '';         // transient "couldn't save" notice (quota full / access revoked / Supabase error)
+  let supa = null;         // Supabase client on the public host (null elsewhere)
   const inflight = {};     // id -> promise: serializes writes per ticket doc (one at a time)
 
   async function getCap(name) {
@@ -193,6 +204,12 @@
     });
     runs = merged;
   }
+  function dropConfirmedPending() { // remove overlay entries the latest server snapshot already reflects
+    for (const id in pending) {
+      for (const path in pending[id]) { const want = pending[id][path], got = atPath(serverRuns[id], path); if (got === want || (got == null && want == null)) delete pending[id][path]; }
+      if (!Object.keys(pending[id]).length) delete pending[id];
+    }
+  }
 
   function loadLocalRuns() { try { const s = JSON.parse(localStorage.getItem('cueqa-pending-v4') || 'null'); if (s && typeof s === 'object') pending = s; } catch (e) {} rebuildRuns(); }
   function saveLocalRuns() { try { localStorage.setItem('cueqa-pending-v4', JSON.stringify(pending)); } catch (e) {} }
@@ -205,7 +222,8 @@
     dbNote = '';
     rebuildRuns();
     renderQueue(); renderSheet();
-    if (db && dbWritable) persistFields(id, patch);
+    if (supa) supaPersist(id);
+    else if (db && dbWritable) persistFields(id, patch);
     else saveLocalRuns();
   }
   // The whole gesture in ONE update() (nested-merge), so a verdict + who + when land atomically and writes to
@@ -255,17 +273,14 @@
 
   async function initDb() {
     db = await getCap('db');
-    if (!db) { loadLocalRuns(); renderAll(); return; }
+    if (!db) { if (SUPA_ENABLED) return initSupabase(); loadLocalRuns(); renderAll(); return; }
     try {
       db.collection('runs').onSnapshot(
         snap => {
           const next = {};
           snap.docs.forEach(d => { if (d.exists) next[d.id] = d.data(); }); // frozen; only ever read via atPath, and rebuildRuns clones before mutating
           serverRuns = next;
-          for (const id in pending) { // drop overlay entries the server now reflects
-            for (const path in pending[id]) { const want = pending[id][path], got = atPath(serverRuns[id], path); if (got === want || (got == null && want == null)) delete pending[id][path]; }
-            if (!Object.keys(pending[id]).length) delete pending[id];
-          }
+          dropConfirmedPending();
           rebuildRuns(); renderPreservingFocus();
         },
         err => { db = null; saveLocalRuns(); rebuildRuns(); renderAll(); } // any error here is terminal (incl. dead-bridge 'unavailable'); keep edits, continue local
@@ -277,6 +292,42 @@
     if (!user || !user.can) return;
     try { canWrite = await user.can('data.write'); } catch (e) { canWrite = null; }
     if (canWrite === false) { dbWritable = false; renderAll(); }
+  }
+
+  // ---------- Supabase backend (public host only) ----------
+  // Point the SAME overlay model at a shared Postgres table so testers see each other's results live.
+  // Reads qa_runs → serverRuns, subscribes to Realtime, upserts the whole run doc per ticket (serialized on
+  // inflight[id]). Degrades to localStorage if the client script, the table, or the network can't be reached.
+  function loadScript(src) {
+    return new Promise((resolve, reject) => { const s = document.createElement('script'); s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('script load failed')); document.head.appendChild(s); });
+  }
+  function applyServerRow(id, run) { try { serverRuns[id] = JSON.parse(JSON.stringify(run || {})); } catch (e) { serverRuns[id] = {}; } }
+  async function initSupabase() {
+    try {
+      if (!window.supabase) await loadScript('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js');
+      supa = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+      const { data, error } = await supa.from('qa_runs').select('ticket_id, run');
+      if (error) throw error;
+      serverRuns = {};
+      (data || []).forEach(r => { if (r && r.ticket_id) applyServerRow(r.ticket_id, r.run); });
+      dropConfirmedPending(); rebuildRuns(); renderAll();
+      supa.channel('qa_runs').on('postgres_changes', { event: '*', schema: 'public', table: 'qa_runs' }, p => {
+        const row = (p.new && p.new.ticket_id) ? p.new : p.old;
+        if (!row || !row.ticket_id) return;
+        if (p.eventType === 'DELETE') delete serverRuns[row.ticket_id];
+        else applyServerRow(row.ticket_id, row.run);
+        dropConfirmedPending(); rebuildRuns(); renderPreservingFocus();
+      }).subscribe();
+    } catch (e) { supa = null; loadLocalRuns(); renderAll(); } // no table / offline / blocked → per-browser fallback
+  }
+  function supaPersist(id) { // upsert the whole merged run for this ticket, serialized per id (Realtime echoes it back)
+    inflight[id] = Promise.resolve(inflight[id]).catch(() => {}).then(async () => {
+      if (!supa) return;
+      try {
+        const { error } = await supa.from('qa_runs').upsert({ ticket_id: id, run: runs[id] || {}, updated_at: new Date().toISOString() });
+        if (error) { dbNote = 'Couldn’t save — ' + (error.message || 'the database rejected the write'); renderSheet(); }
+      } catch (e) { /* keep the overlay; Realtime or the next edit reconciles */ }
+    });
   }
 
   // ---------- refresh from Linear (mcp) ----------
@@ -458,6 +509,7 @@
     if (refreshing) { el.textContent = 'Refreshing from Linear…'; return; }
     if (refreshError) { el.textContent = errText(refreshError); el.className = 'q-status err'; return; }
     if (lastRefreshed) { el.textContent = 'Updated from Linear ' + timeAgo(lastRefreshed); return; }
+    if (SUPA_ENABLED) { el.textContent = supa ? 'Shared results · live' : 'Connecting to shared results…'; return; }
     if (mcpCap === null) { el.textContent = 'Connect Linear to refresh'; return; }
     el.textContent = 'Baked snapshot · tap ↻ to sync with Linear';
   }
@@ -649,7 +701,7 @@
       if (readOnly()) return;
       const id = current, n = nt.getAttribute('data-note'), val = nt.value;
       (pending[id] = pending[id] || {})['notes.' + n] = val; rebuildRuns();
-      clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (db && dbWritable) persistFields(id, { ['notes.' + n]: val }); else saveLocalRuns(); }, 500);
+      clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (supa) supaPersist(id); else if (db && dbWritable) persistFields(id, { ['notes.' + n]: val }); else saveLocalRuns(); }, 500);
     }
   });
 
