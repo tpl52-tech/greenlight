@@ -368,6 +368,7 @@
   // `manual-qa` sub-issue is authored for the screen-testable ones). Cue QA just lists the manual-qa tickets —
   // no in-app classification. Keep only the active ones (a Done/Canceled sub-issue is off the queue).
   const QA_LABEL = 'manual-qa'; // the one marker the whole pipeline agrees on
+  // statusType is list_issues' flat status-type scalar (e.g. 'started' | 'completed' | 'canceled' | 'unstarted').
   const isActiveManualQa = i => (labelNames(i.labels) || []).includes(QA_LABEL) && i.statusType !== 'completed' && i.statusType !== 'canceled';
 
   function errText(code) {
@@ -402,9 +403,12 @@
       const issues = payload && (payload.issues || (Array.isArray(payload) ? payload : null));
       if (!Array.isArray(issues)) throw { code: 'tool_error' }; // unexpected shape: keep current list, show error
       const active = issues.filter(isActiveManualQa); // defensive (a connector ignoring `label`) + drop Done/Canceled
+      // Keep the list row as the one known payload shape and overlay ONLY the full description from get_issue.
+      // No full body (get_issue failed, denied, or returned none) → blank it so buildTicket uses baked/autoSheet
+      // rather than parsing a truncated row.
       const full = await Promise.all(active.map(async i => {
-        try { const g = await mcpCap.callTool(LINEAR_SERVER, 'get_issue', { id: i.id }); const gp = g && g.payload; return (gp && gp.id) ? gp : i; }
-        catch (e) { return i; } // get_issue unavailable/denied → keep the truncated row; buildTicket falls back to baked
+        try { const g = await mcpCap.callTool(LINEAR_SERVER, 'get_issue', { id: i.id }); const d = g && g.payload && g.payload.description; return { ...i, description: d || '' }; }
+        catch (e) { return { ...i, description: '' }; }
       }));
       tickets = full.map(buildTicket).sort(byPriority);
       if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
