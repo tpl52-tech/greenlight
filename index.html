@@ -620,11 +620,10 @@
       const res = await mcpCap.callTool(LINEAR_SERVER, 'list_issues',
         { project: PROJECT_UUID, state: VERIFYING_STATE, limit: 50 });
       const payload = res && res.payload;
-      const issues = (payload && payload.issues) || (Array.isArray(payload) ? payload : []);
-      if (issues.length || Array.isArray(issues)) {
-        tickets = issues.map(buildTicket).sort(byPriority);
-        if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
-      }
+      const issues = payload && (payload.issues || (Array.isArray(payload) ? payload : null));
+      if (!Array.isArray(issues)) throw { code: 'tool_error' }; // unexpected shape: keep current list, show error
+      tickets = issues.map(buildTicket).sort(byPriority);
+      if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
       lastRefreshed = Date.now(); refreshing = false; renderAll();
     } catch (err) {
       refreshing = false; refreshError = (err && err.code) || 'error'; renderStatus();
