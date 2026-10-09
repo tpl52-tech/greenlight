@@ -380,29 +380,6 @@
       ],
     },
     {
-      id:'COR-27', comp:'Database · RLS', milestone:'Phase 1b — Auth', assignee:'Kenan Tat',
-      priority:'high', labels:['lead-level','db-migration'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-27/profiles-table-first-sign-in-upsert-deny-all-rls-baseline',
-      title:'profiles table + deny-all RLS baseline',
-      summary:'Row-Level Security is on for every table with a deny-all default, and the profiles policies allow public read but let a user write only their own row (keyed to their Firebase uid). The app-side first-sign-in upsert is deferred.',
-      headsup:'This is a lead-level, database-side check — you need read access to Supabase or the `ao verify` tooling, not just the phone. The app-side first-sign-in upsert is deferred (blocked on COR-26), so don’t test that part here.',
-      pre:[
-        'Access to the Supabase project (or the verify tooling) with a non-superuser role.',
-        'Two user identities (or their Firebase uids) to test self-vs-other writes.',
-      ],
-      steps:[
-        { n:1, title:'RLS is on everywhere', do:['List the tables and check whether RLS is enabled on each.'],
-          expect:'Every table has RLS enabled — none left open.', failif:'Any table has RLS turned off.' },
-        { n:2, title:'Deny-all by default', do:['As an anonymous / unauthenticated role, try to read a table that has no explicit allow policy.'],
-          expect:'The read returns nothing — the deny-all default holds.' },
-        { n:3, title:'profiles is publicly readable', do:['Read the profiles table.'],
-          expect:'Rows come back — public read is allowed.' },
-        { n:4, title:'Self-write only', do:['Signed in as User A, update your own profile row. Then try to update User B’s row.'],
-          expect:'Your own row updates; the write to B’s row is denied.', failif:'You can change another user’s profile.' },
-        { n:5, title:'No role self-assignment', do:['Try to set your own role to "staff" with a direct write.'],
-          expect:'The column-level grant blocks it — role can’t be self-assigned.', failif:'The write succeeds.' },
-      ],
-    },
-    {
       id:'COR-19', comp:'Home', milestone:'Phase 1a — Search & Home', assignee:'Lahari Bandaru',
       priority:'normal', labels:['beginner'], url:'https://linear.app/cornell-ewb-softdev/issue/COR-19/home-item-sections-from-real-data',
       title:'Home: item sections from real data',
@@ -628,6 +605,7 @@
   let refreshing = false;
   let refreshError = null;
   let lastRefreshed = null;
+  let hiddenCount = 0;      // backend-only tickets excluded on the last refresh (the verify sweep owns those)
 
   function stripMd(s) {
     return String(s || '')
@@ -680,6 +658,18 @@
   }
   const byPriority = (a, b) => (a.priority === 'high' ? 0 : 1) - (b.priority === 'high' ? 0 : 1);
 
+  // Cue QA is manual testing for non-technical members: only tickets whose "working" is observable by using
+  // the app belong here. Backend-only work (RLS, triggers, migrations, Workers, endpoints) is the verify
+  // sweep's job, not manual QA. A screen signal keeps a ticket (ui/mixed); one written only in backend terms,
+  // naming nothing on screen, is dropped.
+  // NB: no "catalog" — in the ReUse app that's the items screen (a UI word), not a backend signal.
+  const BACKEND_RX = /\b(rls|row[- ]level|deny-all|polic(y|ies)|trigger|migration|schema|service[_ ]role|webhook|worker|endpoint|edge function|durable object|cron|select-only|grant|jwt|id token)\b/i;
+  const SCREEN_RX = /\b(figma|screen|tap|button|card|list|grid|render|expo go|tab|form|empty state|loading|photo|image|star|heart|navigat|banner|badge|avatar|scroll)\b/i;
+  function isManualQa(issue) {
+    const text = (issue.title || '') + ' ' + (issue.description || '');
+    return SCREEN_RX.test(text) || !BACKEND_RX.test(text);
+  }
+
   function errText(code) {
     switch (code) {
       case 'nocap': case 'not_granted': case 'capability_disabled':
@@ -709,7 +699,9 @@
       const payload = res && res.payload;
       const issues = payload && (payload.issues || (Array.isArray(payload) ? payload : null));
       if (!Array.isArray(issues)) throw { code: 'tool_error' }; // unexpected shape: keep current list, show error
-      tickets = issues.map(buildTicket).sort(byPriority);
+      const manual = issues.filter(isManualQa);
+      hiddenCount = issues.length - manual.length; // backend-only tickets the verify sweep owns, not manual QA
+      tickets = manual.map(buildTicket).sort(byPriority);
       if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
       lastRefreshed = Date.now(); refreshing = false; renderAll();
     } catch (err) {
@@ -756,7 +748,7 @@
     el.className = 'q-status';
     if (refreshing) { el.textContent = 'Refreshing from Linear…'; return; }
     if (refreshError) { el.textContent = errText(refreshError); el.className = 'q-status err'; return; }
-    if (lastRefreshed) { el.textContent = 'Updated from Linear ' + timeAgo(lastRefreshed); return; }
+    if (lastRefreshed) { el.textContent = 'Updated from Linear ' + timeAgo(lastRefreshed) + (hiddenCount ? ' · ' + hiddenCount + ' backend-only hidden' : ''); return; }
     if (mcpCap === null) { el.textContent = 'Connect Linear to refresh'; return; }
     el.textContent = 'Baked snapshot · tap ↻ to sync with Linear';
   }

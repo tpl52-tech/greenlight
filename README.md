@@ -1,8 +1,11 @@
 # qa-task-manager
 
 An Apple-styled QA task manager for the **ReUse App — Fall 2026** project
-(Cornell EWB SoftDev). Manual testers work the tickets in Linear's
-**Verifying** column as structured run sheets.
+(Cornell EWB SoftDev). It is **manual testing for non-technical members**:
+testers work the tickets in Linear's **Verifying** column as structured,
+tap-through run sheets. A ticket belongs here only if its "working" is
+observable by *using the app* — backend-only work (RLS, triggers, migrations,
+Workers, endpoints) is the automated **verify sweep's** job, not Cue QA.
 
 ## Apps
 
@@ -17,10 +20,13 @@ Both are single static HTML files — no build step.
 
 ## Where the tickets come from
 
-Cue QA ships with the six tickets that were in **Verifying** as a baked-in
-snapshot, each turned into a run sheet from its real acceptance criteria
-(COR-35 uses the lead's hand-written script verbatim). The **↻ Refresh**
-button re-pulls the Verifying column live.
+Cue QA ships with the screen-observable tickets that were in **Verifying** as a
+baked-in snapshot, each turned into a run sheet from its real acceptance criteria
+(COR-35 uses the lead's hand-written script verbatim). The **↻ Refresh** button
+re-pulls the Verifying column live and hides tickets written as pure backend work
+(and shows how many it hid), so non-technical testers see what they can tap through.
+It errs toward showing — an occasional backend ticket can slip through and is just
+skipped — rather than risk hiding something a tester could actually check.
 
 ## Running it
 
