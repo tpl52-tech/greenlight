@@ -16,7 +16,8 @@ Workers, endpoints) is the automated **verify sweep's** job, not Cue QA.
 - **`cue.html` — Cue.** A minimal To Do / Done task manager (the original
   single-user version).
 
-Both are single static HTML files — no build step.
+`cue.html` is a single static file; **Cue QA** is `index.html` plus its logic in
+`app.js` beside it (served/published together). No build step either way.
 
 ## Where the tickets come from
 
