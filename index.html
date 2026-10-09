@@ -517,14 +517,27 @@
     const r = runs[id]; r.pre = r.pre || {}; r.steps = r.steps || {}; r.notes = r.notes || {};
     return r;
   }
-  function persist(id) {
-    saveLocalRuns();
-    if (db && dbWritable) {
-      const r = getRun(id);
-      const body = { pre:r.pre, steps:r.steps, notes:r.notes, verdict:r.verdict || null, updatedAt:Date.now() };
-      db.doc('runs/' + id).set(body).catch(err => {
-        if (err && err.code === 'invalid_argument') { dbWritable = false; renderAll(); }
-      });
+  const EMPTY_RUN = { pre:{}, steps:{}, notes:{}, verdict: undefined };
+  // read-only view of a run for render paths — never creates an entry (unlike getRun)
+  function readRun(id) {
+    const r = runs[id];
+    return r ? { pre:r.pre || {}, steps:r.steps || {}, notes:r.notes || {}, verdict:r.verdict } : EMPTY_RUN;
+  }
+  // Persist one changed field. Per-field `update` (nested-merge) so two testers on the
+  // same ticket don't clobber each other; `set` only to create the doc the first time.
+  async function persist(id, patch) {
+    if (!db || !dbWritable) { saveLocalRuns(); return; }
+    const ref = db.doc('runs/' + id);
+    try {
+      await ref.update(Object.assign({ updatedAt: Date.now() }, patch));
+    } catch (err) {
+      if (!err || err.code !== 'invalid_argument') return; // transient/other: local already mirrors via getRun
+      try { // doc missing (update requires it to exist) — or a read-only viewer
+        const r = getRun(id);
+        await ref.set({ pre:r.pre, steps:r.steps, notes:r.notes, verdict:r.verdict || null, updatedAt: Date.now() });
+      } catch (e2) {
+        if (e2 && e2.code === 'invalid_argument') { dbWritable = false; renderAll(); }
+      }
     }
   }
   async function initDb() {
@@ -537,7 +550,7 @@
           snap.docs.forEach(d => { if (d.exists) { try { next[d.id] = JSON.parse(JSON.stringify(d.data())); } catch (e) {} } });
           runs = next; renderAll();
         },
-        err => { if (err && err.code !== 'unavailable') { db = null; loadLocalRuns(); renderAll(); } }
+        err => { db = null; loadLocalRuns(); renderAll(); } // any error reaching here is terminal (incl. dead-bridge 'unavailable'); fall back to local
       );
     } catch (e) { db = null; loadLocalRuns(); renderAll(); }
   }
@@ -576,18 +589,23 @@
       : [{ n:1, title:'Verify the feature', do:['Exercise the behavior described in the ticket.'], expect:'It works as the ticket describes.' }];
     return { comp:'ReUse App', summary: cleanDesc(issue.description) || issue.title, pre:['Signed in, with the app running on your phone in Expo Go.'], steps };
   }
+  // Normalize Linear fields defensively: this session's list_issues returns priority as
+  // {value,name}, assignee as a string, labels as string[] — but accept object/scalar either way.
+  function personName(a) { return (a && typeof a === 'object') ? (a.name || a.displayName || a.email || null) : (a || null); }
+  function labelNames(ls) { return Array.isArray(ls) ? ls.map(l => (l && typeof l === 'object') ? (l.name || '') : l).filter(Boolean) : null; }
+  function priorityRank(p) { const v = (p && typeof p === 'object') ? p.value : p; return (v === 1 || v === 2) ? 'high' : 'normal'; }
   function buildTicket(issue) {
     const baked = BAKED[issue.id];
     const sheet = baked || autoSheet(issue);
-    const pv = issue.priority && issue.priority.value;
+    const hasPriority = issue.priority !== undefined && issue.priority !== null;
     return {
       id: issue.id,
       title: (baked && baked.title) || issue.title,
       comp: sheet.comp || 'ReUse App',
       milestone: (issue.projectMilestone && issue.projectMilestone.name) || (baked && baked.milestone) || '',
-      assignee: issue.assignee || (baked && baked.assignee) || 'Unassigned',
-      priority: (pv === 1 || pv === 2) ? 'high' : 'normal',
-      labels: issue.labels || (baked && baked.labels) || [],
+      assignee: personName(issue.assignee) || (baked && baked.assignee) || 'Unassigned',
+      priority: hasPriority ? priorityRank(issue.priority) : ((baked && baked.priority) || 'normal'),
+      labels: Array.isArray(issue.labels) ? labelNames(issue.labels) : ((baked && baked.labels) || []),
       url: issue.url || (baked && baked.url) || '#',
       summary: sheet.summary, pre: sheet.pre, headsup: sheet.headsup, steps: sheet.steps,
     };
@@ -658,7 +676,7 @@
     if (!searchQ) return true;
     return (t.id + ' ' + t.title + ' ' + t.comp + ' ' + t.assignee).toLowerCase().includes(searchQ);
   }
-  function checkedCount(t) { const r = getRun(t.id); return t.steps.filter(s => r.steps[s.n]).length; }
+  function checkedCount(t) { const r = readRun(t.id); return t.steps.filter(s => r.steps[s.n]).length; }
   const escapeHtml = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
   // ---------- render ----------
@@ -712,7 +730,7 @@
     const inner = document.getElementById('sheetInner');
     const bar = document.getElementById('verdictBar');
     if (!t) { inner.innerHTML = `<div class="empty">Select a ticket to begin.</div>`; bar.hidden = true; return; }
-    const r = getRun(t.id);
+    const r = readRun(t.id);
     const done = checkedCount(t), total = t.steps.length;
     const pct = total ? Math.round((done / total) * 100) : 0;
 
@@ -761,7 +779,7 @@
             ${t.priority === 'high' ? `<span class="prio">${ICON.flag} High</span>` : ''}
             ${t.milestone ? `<span>${escapeHtml(t.milestone)}</span>` : ''}
             ${(t.labels || []).map(l => `<span class="ltag">${escapeHtml(l)}</span>`).join('')}
-            <a class="sh-link" href="${t.url}" target="_blank" rel="noopener">View in Linear ↗</a>
+            <a class="sh-link" href="${escapeHtml(t.url)}" target="_blank" rel="noopener">View in Linear ↗</a>
           </div>
         </div>
         <div class="ring-wrap" role="img" aria-label="${done} of ${total} steps checked">
@@ -816,17 +834,17 @@
     if (e.target.closest('#backBtn')) { document.getElementById('workspace').setAttribute('data-view', 'list'); return; }
 
     const pre = e.target.closest('.pre-row');
-    if (pre) { const r = getRun(current), i = pre.getAttribute('data-pre'); r.pre[i] = !r.pre[i]; persist(current); renderQueue(); renderSheet(); return; }
+    if (pre) { const r = getRun(current), i = pre.getAttribute('data-pre'); r.pre[i] = !r.pre[i]; persist(current, { pre: { [i]: r.pre[i] } }); renderQueue(); renderSheet(); return; }
     const rb = e.target.closest('.res-btn');
-    if (rb) { const r = getRun(current), n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); r.steps[n] = r.steps[n] === v ? null : v; persist(current); renderQueue(); renderSheet(); return; }
+    if (rb) { const r = getRun(current), n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); r.steps[n] = r.steps[n] === v ? null : v; persist(current, { steps: { [n]: r.steps[n] } }); renderQueue(); renderSheet(); return; }
     const vb = e.target.closest('.v-btn');
-    if (vb) { const r = getRun(current), v = vb.getAttribute('data-verdict'); r.verdict = r.verdict === v ? null : v; persist(current); renderQueue(); renderSheet(); return; }
+    if (vb) { const r = getRun(current), v = vb.getAttribute('data-verdict'); r.verdict = r.verdict === v ? null : v; persist(current, { verdict: r.verdict || null }); renderQueue(); renderSheet(); return; }
   });
 
   let noteTimer = null;
   document.body.addEventListener('input', e => {
     const nt = e.target.closest('.step-note');
-    if (nt) { const id = current; getRun(id).notes[nt.getAttribute('data-note')] = nt.value; clearTimeout(noteTimer); noteTimer = setTimeout(() => persist(id), 500); }
+    if (nt) { const id = current, n = nt.getAttribute('data-note'), val = nt.value; getRun(id).notes[n] = val; clearTimeout(noteTimer); noteTimer = setTimeout(() => persist(id, { notes: { [n]: val } }), 500); }
   });
 
   document.getElementById('search').addEventListener('input', e => { searchQ = e.target.value.trim().toLowerCase(); renderQueue(); });

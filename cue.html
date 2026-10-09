@@ -314,7 +314,7 @@
       const t = localStorage.getItem('cue-theme');
       if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
       const done = JSON.parse(localStorage.getItem('cue-done') || 'null');
-      if (Array.isArray(done)) tasks.forEach(t => { if (t.id < nextId) t.done = done.includes(t.id); });
+      if (Array.isArray(done)) tasks.forEach(t => { t.done = done.includes(t.id); });
     } catch (e) {}
   }
   function saveDone() {
@@ -326,7 +326,7 @@
     return !t.done; // 'todo'
   }
   const countIn = id => tasks.filter(t => matches(t, id)).length;
-  const label = id => (filters.find(f => f.id === id) || listById(id) || { name:'Tasks' }).name;
+  const label = id => (filters.find(f => f.id === id) || { name:'Tasks' }).name;
   const escapeHtml = s => s.replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 
   function renderChips() {
