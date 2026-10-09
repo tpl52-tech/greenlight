@@ -17,8 +17,9 @@
 
   // The QA testers (the non-technical team). Which one "you" are is a per-viewer choice saved in this browser.
   const TESTERS = [
-    { id:'renee', name:'Renee', color:'#ff9500' },
-    { id:'dana',  name:'Dana',  color:'#0071e3' },
+    { id:'renee',   name:'Renee',   color:'#ff9500' },
+    { id:'dana',    name:'Dana',    color:'#0071e3' },
+    { id:'sabrina', name:'Sabrina', color:'#af52de' },
   ];
   const testerById = id => TESTERS.find(t => t.id === id);
   const testerName = id => (testerById(id) || {}).name || id; // display name, else the raw id (escaped at render)
