@@ -245,6 +245,9 @@
   .res-btn.pass.on { background: var(--good); border-color: var(--good); color: #fff; }
   .res-btn.fail.on { background: var(--bad); border-color: var(--bad); color: #fff; }
   .res-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .res-btn:disabled, .v-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pre-row:disabled { cursor: default; }
+  .pre-row:disabled .pre-check { opacity: 0.5; }
   .step-note { margin-top: 11px; width: 100%; border: 0.5px solid var(--separator); background: var(--bg);
     border-radius: 11px; padding: 10px 12px; font: inherit; font-size: 14px; color: var(--fg); outline: none; resize: vertical;
     min-height: 44px; }
@@ -342,7 +345,7 @@
     'Enaika Kishnani':'#0071e3', 'Hyunsuh':'#af52de', 'Kenan Tat':'#ff9500',
     'Willow Chen':'#34c759', 'Neha Bommireddy':'#ff2d55', 'Lahari Bandaru':'#5e5ce6',
   };
-  const avaHTML = (name, cls='ava') => `<span class="${cls}" style="background:${PEOPLE[name] || '#8e8e93'}">${(name||'?')[0]}</span>`;
+  const avaHTML = (name, cls='ava') => `<span class="${cls}" style="background:${PEOPLE[name] || '#8e8e93'}">${escapeHtml((name||'?')[0])}</span>`;
 
   // ReUse App — Fall 2026, "Verifying" column
   const PROJECT_UUID = 'ee39f4b9-275e-40c1-a55e-1ead80ec5a94';
@@ -502,44 +505,81 @@
 
   // ---------- run state ----------
   // runs[ticketId] = { pre:{}, steps:{}, notes:{}, verdict }. Shared via `db`; local fallback.
-  let runs = {};
   let db = null;           // db capability namespace, or null
-  let dbWritable = true;   // flips false if a write is rejected (read-only viewer)
+  let dbWritable = true;   // flips false if a well-formed write is rejected at runtime
+  let canWrite = null;     // user.can('data.write'): null = unknown (stay optimistic), false = read-only
+  let serverRuns = {};     // latest snapshot from db (stays {} in local-only mode)
+  let pending = {};        // id -> { 'steps.1':'pass', 'pre.0':true, 'notes.2':'…', 'verdict':'fail' } — writes not yet confirmed by the server
+  let runs = {};           // render view = serverRuns deep-merged with the pending overlay
 
   async function getCap(name) {
     try { return window.claude && window.claude.use ? await window.claude.use(name) : null; }
     catch (e) { return null; }
   }
-  function loadLocalRuns() { try { const s = JSON.parse(localStorage.getItem('cueqa-runs-v3') || 'null'); if (s && typeof s === 'object') runs = s; } catch (e) {} }
-  function saveLocalRuns() { try { localStorage.setItem('cueqa-runs-v3', JSON.stringify(runs)); } catch (e) {} }
-  function getRun(id) {
-    if (!runs[id]) runs[id] = { pre:{}, steps:{}, notes:{} };
-    const r = runs[id]; r.pre = r.pre || {}; r.steps = r.steps || {}; r.notes = r.notes || {};
-    return r;
-  }
-  const EMPTY_RUN = { pre:{}, steps:{}, notes:{}, verdict: undefined };
-  // read-only view of a run for render paths — never creates an entry (unlike getRun)
-  function readRun(id) {
+  const readOnly = () => canWrite === false || (!!db && !dbWritable);
+
+  const EMPTY_RUN = Object.freeze({ pre: Object.freeze({}), steps: Object.freeze({}), notes: Object.freeze({}), verdict: undefined });
+  function readRun(id) { // read-only view for render + status; never creates or mutates state
     const r = runs[id];
-    return r ? { pre:r.pre || {}, steps:r.steps || {}, notes:r.notes || {}, verdict:r.verdict } : EMPTY_RUN;
+    return r ? { pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict } : EMPTY_RUN;
   }
-  // Persist one changed field. Per-field `update` (nested-merge) so two testers on the
-  // same ticket don't clobber each other; `set` only to create the doc the first time.
-  async function persist(id, patch) {
-    if (!db || !dbWritable) { saveLocalRuns(); return; }
+  function applyPath(obj, path, val) { const [a, b] = path.split('.'); if (b === undefined) obj[a] = val; else { obj[a] = obj[a] || {}; obj[a][b] = val; } }
+  function atPath(obj, path) { const [a, b] = path.split('.'); const v = obj ? obj[a] : undefined; return b === undefined ? v : (v ? v[b] : undefined); }
+  function rebuildRuns() { // merge the pending overlay over the server snapshot
+    const merged = {};
+    new Set([...Object.keys(serverRuns), ...Object.keys(pending)]).forEach(id => {
+      const base = serverRuns[id] ? JSON.parse(JSON.stringify(serverRuns[id])) : {};
+      base.pre = base.pre || {}; base.steps = base.steps || {}; base.notes = base.notes || {};
+      const p = pending[id] || {};
+      for (const path in p) applyPath(base, path, p[path]);
+      merged[id] = base;
+    });
+    runs = merged;
+  }
+
+  function loadLocalRuns() { try { const s = JSON.parse(localStorage.getItem('cueqa-pending-v4') || 'null'); if (s && typeof s === 'object') pending = s; } catch (e) {} rebuildRuns(); }
+  function saveLocalRuns() { try { localStorage.setItem('cueqa-pending-v4', JSON.stringify(pending)); } catch (e) {} }
+
+  // Record one changed field, show it optimistically (overlay), and send it on its way.
+  function edit(id, path, val, rerender) {
+    (pending[id] = pending[id] || {})[path] = val;
+    rebuildRuns();
+    if (rerender !== false) { renderQueue(); renderSheet(); }
+    if (db && dbWritable) persistField(id, path, val);
+    else saveLocalRuns();
+  }
+  // One field at a time via update() nested-merge, so concurrent testers don't clobber each
+  // other; set() only to create the doc. The pending overlay keeps the edit visible across
+  // snapshots until the server confirms it (then onSnapshot drops it).
+  async function persistField(id, path, val) {
     const ref = db.doc('runs/' + id);
+    const [a, b] = path.split('.');
+    const patch = (b === undefined) ? { [a]: val } : { [a]: { [b]: val } };
     try {
       await ref.update(Object.assign({ updatedAt: Date.now() }, patch));
     } catch (err) {
-      if (!err || err.code !== 'invalid_argument') return; // transient/other: local already mirrors via getRun
-      try { // doc missing (update requires it to exist) — or a read-only viewer
-        const r = getRun(id);
-        await ref.set({ pre:r.pre, steps:r.steps, notes:r.notes, verdict:r.verdict || null, updatedAt: Date.now() });
+      const code = err && err.code;
+      if (code === 'unavailable' || code === 'resource_exhausted') { // transient: one retry, overlay survives meanwhile
+        setTimeout(() => { if (pending[id] && pending[id][path] === val) persistField(id, path, val); }, 1500); return;
+      }
+      if (code !== 'invalid_argument') return; // overlay stays; a later edit or snapshot reconciles
+      try { // doc missing (update needs it to exist) — or a read-only viewer
+        const r = runs[id] || {};
+        await ref.set({ pre: r.pre || {}, steps: r.steps || {}, notes: r.notes || {}, verdict: r.verdict || null, updatedAt: Date.now() });
       } catch (e2) {
-        if (e2 && e2.code === 'invalid_argument') { dbWritable = false; renderAll(); }
+        if (e2 && e2.code === 'invalid_argument') { dbWritable = false; renderAll(); } // read-only: lock the controls
       }
     }
   }
+
+  function renderPreservingFocus() { // a snapshot mustn't destroy a note the viewer is mid-typing
+    const a = document.activeElement;
+    const key = (a && a.classList && a.classList.contains('step-note')) ? a.getAttribute('data-note') : null;
+    const s0 = key != null ? a.selectionStart : 0, s1 = key != null ? a.selectionEnd : 0;
+    renderAll();
+    if (key != null) { const el = document.querySelector('.step-note[data-note="' + key + '"]'); if (el) { el.focus(); try { el.setSelectionRange(s0, s1); } catch (e) {} } }
+  }
+
   async function initDb() {
     db = await getCap('db');
     if (!db) { loadLocalRuns(); renderAll(); return; }
@@ -548,11 +588,22 @@
         snap => {
           const next = {};
           snap.docs.forEach(d => { if (d.exists) { try { next[d.id] = JSON.parse(JSON.stringify(d.data())); } catch (e) {} } });
-          runs = next; renderAll();
+          serverRuns = next;
+          for (const id in pending) { // drop overlay entries the server now reflects
+            for (const path in pending[id]) { const want = pending[id][path], got = atPath(serverRuns[id], path); if (got === want || (got == null && want == null)) delete pending[id][path]; }
+            if (!Object.keys(pending[id]).length) delete pending[id];
+          }
+          rebuildRuns(); renderPreservingFocus();
         },
-        err => { db = null; loadLocalRuns(); renderAll(); } // any error reaching here is terminal (incl. dead-bridge 'unavailable'); fall back to local
+        err => { db = null; saveLocalRuns(); rebuildRuns(); renderAll(); } // any error here is terminal (incl. dead-bridge 'unavailable'); keep edits, continue local
       );
-    } catch (e) { db = null; loadLocalRuns(); renderAll(); }
+    } catch (e) { db = null; saveLocalRuns(); rebuildRuns(); renderAll(); }
+  }
+  async function initUser() { // learn write capability up front so read-only viewers get a read-only sheet, not reverted clicks
+    const user = await getCap('user');
+    if (!user || !user.can) return;
+    try { canWrite = await user.can('data.write'); } catch (e) { canWrite = null; }
+    if (canWrite === false) { dbWritable = false; renderAll(); }
   }
 
   // ---------- refresh from Linear (mcp) ----------
@@ -605,7 +656,7 @@
       milestone: (issue.projectMilestone && issue.projectMilestone.name) || (baked && baked.milestone) || '',
       assignee: personName(issue.assignee) || (baked && baked.assignee) || 'Unassigned',
       priority: hasPriority ? priorityRank(issue.priority) : ((baked && baked.priority) || 'normal'),
-      labels: Array.isArray(issue.labels) ? labelNames(issue.labels) : ((baked && baked.labels) || []),
+      labels: labelNames(issue.labels) || (baked && baked.labels) || [],
       url: issue.url || (baked && baked.url) || '#',
       summary: sheet.summary, pre: sheet.pre, headsup: sheet.headsup, steps: sheet.steps,
     };
@@ -619,6 +670,7 @@
       case 'needs_reauth': return 'Reconnect Linear in claude.ai → Settings → Connectors.';
       case 'selection_required': return 'Choose which Linear connector to use, then refresh.';
       case 'not_in_manifest': case 'consent_required': return 'Allow Linear for this page, then refresh.';
+      case 'blocked_by_policy': return 'Your organization blocks the Linear connector for this page.';
       case 'tool_error': return 'Linear returned an error for that query.';
       default: return 'Couldn’t reach Linear just now — try again.';
     }
@@ -658,7 +710,7 @@
   let searchQ = '';
 
   function statusOf(id) {
-    const r = runs[id] || {};
+    const r = readRun(id);
     if (r.verdict === 'pass') return { k:'pass', label:'Passed' };
     if (r.verdict === 'fail') return { k:'fail', label:'Failed' };
     if (r.verdict === 'blocked') return { k:'blocked', label:'Blocked' };
@@ -710,9 +762,9 @@
       const st = statusOf(t.id);
       const done = checkedCount(t), total = t.steps.length;
       const prio = t.priority === 'high' ? '<span class="pdot" title="High priority"></span>' : '';
-      return `<button class="q-card" data-id="${t.id}" aria-current="${current === t.id}">
+      return `<button class="q-card" data-id="${escapeHtml(t.id)}" aria-current="${current === t.id}">
         <div class="q-top">
-          <span class="q-id">${prio}${t.id}</span>
+          <span class="q-id">${prio}${escapeHtml(t.id)}</span>
           <span class="pill ${st.k}">${st.label}</span>
         </div>
         <div class="q-name">${escapeHtml(t.title)}</div>
@@ -733,9 +785,11 @@
     const r = readRun(t.id);
     const done = checkedCount(t), total = t.steps.length;
     const pct = total ? Math.round((done / total) * 100) : 0;
+    const ro = readOnly();
+    const url = /^https?:\/\//.test(t.url || '') ? t.url : '#';
 
     const pre = t.pre.map((p, i) => `
-      <button class="pre-row ${r.pre[i] ? 'on' : ''}" data-pre="${i}">
+      <button class="pre-row ${r.pre[i] ? 'on' : ''}" data-pre="${i}"${ro ? ' disabled' : ''}>
         <span class="pre-check">${ICON.check}</span>
         <span class="pre-text">${escapeHtml(p)}</span>
       </button>`).join('');
@@ -752,7 +806,7 @@
       const expect = `<div class="crit expect"><span class="ic">${ICON.check}</span><div><span class="lbl">Expect —</span> ${escapeHtml(s.expect)}</div></div>`;
       const failif = s.failif ? `<div class="crit failif"><span class="ic">${ICON.x}</span><div><span class="lbl">Fail if —</span> ${escapeHtml(s.failif)}</div></div>` : '';
       const note = res === 'fail'
-        ? `<textarea class="step-note" data-note="${s.n}" placeholder="What went wrong? (note for the lead)">${escapeHtml(r.notes[s.n] || '')}</textarea>` : '';
+        ? `<textarea class="step-note" data-note="${s.n}"${ro ? ' readonly' : ''} placeholder="What went wrong? (note for the lead)">${escapeHtml(r.notes[s.n] || '')}</textarea>` : '';
       return `<div class="step ${res || ''}">
         <div class="step-top">
           <span class="step-n">${s.n}</span>
@@ -761,8 +815,8 @@
         ${doList ? `<ul class="do">${doList}</ul>` : ''}
         ${expect}${failif}
         <div class="step-actions">
-          <button class="res-btn pass ${res === 'pass' ? 'on' : ''}" data-step="${s.n}" data-res="pass">${ICON.check} Pass</button>
-          <button class="res-btn fail ${res === 'fail' ? 'on' : ''}" data-step="${s.n}" data-res="fail">${ICON.x} Fail</button>
+          <button class="res-btn pass ${res === 'pass' ? 'on' : ''}" data-step="${s.n}" data-res="pass"${ro ? ' disabled' : ''}>${ICON.check} Pass</button>
+          <button class="res-btn fail ${res === 'fail' ? 'on' : ''}" data-step="${s.n}" data-res="fail"${ro ? ' disabled' : ''}>${ICON.x} Fail</button>
         </div>
         ${note}
       </div>`;
@@ -772,14 +826,14 @@
       <button class="back" id="backBtn">${ICON.back} Queue</button>
       <div class="sh-head">
         <div style="min-width:0">
-          <div class="sh-eyebrow">${t.id} · ${escapeHtml(t.comp)}</div>
+          <div class="sh-eyebrow">${escapeHtml(t.id)} · ${escapeHtml(t.comp)}</div>
           <h1 class="sh-title">${escapeHtml(t.title)}</h1>
           <div class="sh-meta">
             <span class="who"><span class="wl">Built by</span> ${avaHTML(t.assignee)} ${escapeHtml(t.assignee)}</span>
             ${t.priority === 'high' ? `<span class="prio">${ICON.flag} High</span>` : ''}
             ${t.milestone ? `<span>${escapeHtml(t.milestone)}</span>` : ''}
             ${(t.labels || []).map(l => `<span class="ltag">${escapeHtml(l)}</span>`).join('')}
-            <a class="sh-link" href="${escapeHtml(t.url)}" target="_blank" rel="noopener">View in Linear ↗</a>
+            <a class="sh-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">View in Linear ↗</a>
           </div>
         </div>
         <div class="ring-wrap" role="img" aria-label="${done} of ${total} steps checked">
@@ -803,15 +857,15 @@
 
     const pass = t.steps.filter(s => r.steps[s.n] === 'pass').length;
     const fail = t.steps.filter(s => r.steps[s.n] === 'fail').length;
-    const ro = db && !dbWritable ? ' · view-only (ask the lead for edit access to record)' : '';
+    const roNote = ro ? ' · view-only — ask the lead for edit access to record' : '';
     bar.hidden = false;
     document.getElementById('verdictInner').innerHTML = `
-      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${ro}</div>
+      <div class="tally"><b>${pass}</b> pass · <b>${fail}</b> fail · ${done}/${total} checked${roNote}</div>
       <span class="verdict-spacer"></span>
       <span class="verdict-label">Record result:</span>
-      <button class="v-btn pass ${r.verdict === 'pass' ? 'on' : ''}" data-verdict="pass">Pass</button>
-      <button class="v-btn fail ${r.verdict === 'fail' ? 'on' : ''}" data-verdict="fail">Fail</button>
-      <button class="v-btn blocked ${r.verdict === 'blocked' ? 'on' : ''}" data-verdict="blocked">Blocked</button>
+      <button class="v-btn pass ${r.verdict === 'pass' ? 'on' : ''}" data-verdict="pass"${ro ? ' disabled' : ''}>Pass</button>
+      <button class="v-btn fail ${r.verdict === 'fail' ? 'on' : ''}" data-verdict="fail"${ro ? ' disabled' : ''}>Fail</button>
+      <button class="v-btn blocked ${r.verdict === 'blocked' ? 'on' : ''}" data-verdict="blocked"${ro ? ' disabled' : ''}>Blocked</button>
     `;
   }
 
@@ -833,18 +887,23 @@
     if (fc) { queueFilter = fc.getAttribute('data-filter'); renderQueue(); return; }
     if (e.target.closest('#backBtn')) { document.getElementById('workspace').setAttribute('data-view', 'list'); return; }
 
+    if (readOnly()) return; // controls render disabled; this guards the data-editing branches only
     const pre = e.target.closest('.pre-row');
-    if (pre) { const r = getRun(current), i = pre.getAttribute('data-pre'); r.pre[i] = !r.pre[i]; persist(current, { pre: { [i]: r.pre[i] } }); renderQueue(); renderSheet(); return; }
+    if (pre) { const i = pre.getAttribute('data-pre'); edit(current, 'pre.' + i, !readRun(current).pre[i]); return; }
     const rb = e.target.closest('.res-btn');
-    if (rb) { const r = getRun(current), n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); r.steps[n] = r.steps[n] === v ? null : v; persist(current, { steps: { [n]: r.steps[n] } }); renderQueue(); renderSheet(); return; }
+    if (rb) { const n = rb.getAttribute('data-step'), v = rb.getAttribute('data-res'); edit(current, 'steps.' + n, readRun(current).steps[n] === v ? null : v); return; }
     const vb = e.target.closest('.v-btn');
-    if (vb) { const r = getRun(current), v = vb.getAttribute('data-verdict'); r.verdict = r.verdict === v ? null : v; persist(current, { verdict: r.verdict || null }); renderQueue(); renderSheet(); return; }
+    if (vb) { const v = vb.getAttribute('data-verdict'); edit(current, 'verdict', readRun(current).verdict === v ? null : v); return; }
   });
 
   let noteTimer = null;
   document.body.addEventListener('input', e => {
     const nt = e.target.closest('.step-note');
-    if (nt) { const id = current, n = nt.getAttribute('data-note'), val = nt.value; getRun(id).notes[n] = val; clearTimeout(noteTimer); noteTimer = setTimeout(() => persist(id, { notes: { [n]: val } }), 500); }
+    if (nt) { // overlay the note locally without a re-render (keeps focus/caret), persist debounced
+      const id = current, n = nt.getAttribute('data-note'), val = nt.value;
+      (pending[id] = pending[id] || {})['notes.' + n] = val; rebuildRuns();
+      clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (db && dbWritable) persistField(id, 'notes.' + n, val); else saveLocalRuns(); }, 500);
+    }
   });
 
   document.getElementById('search').addEventListener('input', e => { searchQ = e.target.value.trim().toLowerCase(); renderQueue(); });
@@ -865,5 +924,6 @@
   try { const th = localStorage.getItem('cueqa-theme'); if (th === 'dark' || th === 'light') document.documentElement.setAttribute('data-theme', th); } catch (e) {}
   renderAll();
   initDb();
+  initUser();
   getCap('mcp').then(c => { mcpCap = c; renderStatus(); });
 </script>
