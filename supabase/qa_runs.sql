@@ -28,6 +28,11 @@ create policy "qa_runs public insert" on public.qa_runs for insert with check (t
 drop policy if exists "qa_runs public update" on public.qa_runs;
 create policy "qa_runs public update" on public.qa_runs for update using (true) with check (true);
 
+-- Cap the anon-writable key so a public writer can't bloat the table with huge ids (idempotent).
+do $$ begin
+  alter table public.qa_runs add constraint qa_runs_ticket_id_len check (char_length(ticket_id) <= 64);
+exception when duplicate_object then null; end $$;
+
 -- Live sync across testers (idempotent).
 do $$ begin
   alter publication supabase_realtime add table public.qa_runs;

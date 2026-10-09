@@ -177,6 +177,7 @@
   let runs = {};           // render view = serverRuns deep-merged with the pending overlay
   let dbNote = '';         // transient "couldn't save" notice (quota full / access revoked / Supabase error)
   let supa = null;         // Supabase client on the public host (null elsewhere)
+  let supaLive = false;    // Supabase Realtime channel reached SUBSCRIBED (drives the "· live" label)
   const inflight = {};     // id -> promise: serializes writes per ticket doc (one at a time)
 
   async function getCap(name) {
@@ -222,6 +223,10 @@
     dbNote = '';
     rebuildRuns();
     renderQueue(); renderSheet();
+    persist(id, patch);
+  }
+  // One place the backend is chosen: Supabase (public host) → artifact db → localStorage.
+  function persist(id, patch) {
     if (supa) supaPersist(id);
     else if (db && dbWritable) persistFields(id, patch);
     else saveLocalRuns();
@@ -317,16 +322,21 @@
         if (p.eventType === 'DELETE') delete serverRuns[row.ticket_id];
         else applyServerRow(row.ticket_id, row.run);
         dropConfirmedPending(); rebuildRuns(); renderPreservingFocus();
-      }).subscribe();
+      }).subscribe((status) => { supaLive = status === 'SUBSCRIBED'; renderStatus(); }); // only claim "· live" once the channel is really subscribed
     } catch (e) { supa = null; loadLocalRuns(); renderAll(); } // no table / offline / blocked → per-browser fallback
   }
-  function supaPersist(id) { // upsert the whole merged run for this ticket, serialized per id (Realtime echoes it back)
+  // Upsert the WHOLE merged run for this ticket, serialized per id (Realtime echoes it back). Last-writer-wins:
+  // two testers editing the SAME ticket within one round-trip can clobber each other — acceptable here (2
+  // testers, usually different tickets, results are re-markable; the artifact `db` path does a finer per-field merge).
+  function supaPersist(id, retried) {
     inflight[id] = Promise.resolve(inflight[id]).catch(() => {}).then(async () => {
       if (!supa) return;
       try {
         const { error } = await supa.from('qa_runs').upsert({ ticket_id: id, run: runs[id] || {}, updated_at: new Date().toISOString() });
-        if (error) { dbNote = 'Couldn’t save — ' + (error.message || 'the database rejected the write'); renderSheet(); }
-      } catch (e) { /* keep the overlay; Realtime or the next edit reconciles */ }
+        if (error) { dbNote = 'Couldn’t save — ' + (error.message || 'the database rejected the write'); renderSheet(); } // RLS/constraint reject: retrying won't help
+      } catch (e) { // network failure: one jittered retry, then keep the overlay (the NEXT edit re-pushes — Realtime can't reconcile a write that never landed)
+        if (!retried) setTimeout(() => { if (supa) supaPersist(id, true); }, 800 + Math.random() * 800);
+      }
     });
   }
 
@@ -441,7 +451,7 @@
     return Math.round(s / 3600) + 'h ago';
   }
   async function refreshTickets() {
-    if (refreshing) return;
+    if (refreshing || SUPA_ENABLED) return; // no Linear queue on the public host — the ↻ button is hidden there
     if (mcpCap === undefined) mcpCap = await getCap('mcp');
     if (!mcpCap) { refreshError = 'nocap'; renderStatus(); return; }
     refreshing = true; refreshError = null; renderStatus();
@@ -509,7 +519,7 @@
     if (refreshing) { el.textContent = 'Refreshing from Linear…'; return; }
     if (refreshError) { el.textContent = errText(refreshError); el.className = 'q-status err'; return; }
     if (lastRefreshed) { el.textContent = 'Updated from Linear ' + timeAgo(lastRefreshed); return; }
-    if (SUPA_ENABLED) { el.textContent = supa ? 'Shared results · live' : 'Connecting to shared results…'; return; }
+    if (SUPA_ENABLED) { el.textContent = !supa ? 'Connecting to shared results…' : (supaLive ? 'Shared results · live' : 'Shared results · syncing…'); return; }
     if (mcpCap === null) { el.textContent = 'Connect Linear to refresh'; return; }
     el.textContent = 'Baked snapshot · tap ↻ to sync with Linear';
   }
@@ -701,7 +711,7 @@
       if (readOnly()) return;
       const id = current, n = nt.getAttribute('data-note'), val = nt.value;
       (pending[id] = pending[id] || {})['notes.' + n] = val; rebuildRuns();
-      clearTimeout(noteTimer); noteTimer = setTimeout(() => { if (supa) supaPersist(id); else if (db && dbWritable) persistFields(id, { ['notes.' + n]: val }); else saveLocalRuns(); }, 500);
+      clearTimeout(noteTimer); noteTimer = setTimeout(() => persist(id, { ['notes.' + n]: val }), 500);
     }
   });
 
@@ -728,5 +738,5 @@
   try { const m = localStorage.getItem('cueqa-me'); if (testerById(m)) me = m; } catch (e) {}
   renderAll();
   initDb();
-  initUser();
-  getCap('mcp').then(c => { mcpCap = c; renderStatus(); });
+  if (SUPA_ENABLED) { const rb = document.getElementById('refreshBtn'); if (rb) rb.hidden = true; } // public host has no Linear queue to refresh
+  else { initUser(); getCap('mcp').then(c => { mcpCap = c; renderStatus(); }); }
