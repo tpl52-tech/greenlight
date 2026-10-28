@@ -17,7 +17,6 @@
 
   // The QA testers (the non-technical team). Which one "you" are is a per-viewer choice saved in this browser.
   const TESTERS = [
-    { id:'renee',   name:'Renee',   color:'#ff9500' },
     { id:'dana',    name:'Dana',    color:'#0071e3' },
     { id:'sabrina', name:'Sabrina', color:'#af52de' },
   ];
@@ -648,7 +647,7 @@
         catch (e) { return { ...i, description: '' }; }
       }));
       tickets = full.map(buildTicket).sort(byPriority);
-      if (!ticketById(current)) current = tickets[0] ? tickets[0].id : null;
+      ensureVisibleCurrent();
       lastRefreshed = Date.now(); refreshing = false; renderAll();
     } catch (err) {
       refreshing = false; refreshError = (err && err.code) || 'error'; renderStatus();
@@ -658,7 +657,7 @@
   // ---------- queue state ----------
   const FILTERS = [
     { id:'all', name:'All' }, { id:'todo', name:'To Do' },
-    { id:'prog', name:'In Progress' }, { id:'done', name:'Done' },
+    { id:'prog', name:'In Progress' },
   ];
   let queueFilter = 'all';
   let current = 'COR-96';
@@ -673,10 +672,18 @@
     const anyPre = r.pre && Object.values(r.pre).some(Boolean);
     return (anyStep || anyPre) ? { k:'prog', label:'In Progress' } : { k:'todo', label:'To Do' };
   }
+  // A run sheet is "QAed" once it has a recorded verdict; QAed sheets drop off the board.
+  const isQAed = id => ['pass','fail','blocked'].includes(statusOf(id).k);
+  const visibleTickets = () => tickets.filter(t => !isQAed(t.id)); // computed fresh so it tracks live verdict updates
+  function ensureVisibleCurrent() { // keep `current` on a visible (un-QAed) sheet; advance or clear when it drops off
+    if (current == null || !ticketById(current) || isQAed(current)) {
+      const vis = visibleTickets();
+      current = vis.length ? vis[0].id : null;
+    }
+  }
   function inFilter(id, f) {
     const s = statusOf(id).k;
     if (f === 'all') return true;
-    if (f === 'done') return s === 'pass' || s === 'fail' || s === 'blocked';
     return s === f;
   }
   function matchSearch(t) {
@@ -701,19 +708,20 @@
   }
   function renderFilters() {
     document.getElementById('qfilter').innerHTML = FILTERS.map(f => {
-      const n = tickets.filter(t => inFilter(t.id, f.id)).length;
+      const n = visibleTickets().filter(t => inFilter(t.id, f.id)).length;
       return `<button class="fchip" data-filter="${f.id}" aria-current="${queueFilter === f.id}">${f.name}<span class="n">${n}</span></button>`;
     }).join('');
   }
   function renderQueue() {
+    ensureVisibleCurrent();
     renderFilters();
-    const list = tickets.filter(t => inFilter(t.id, queueFilter) && matchSearch(t));
+    const visible = visibleTickets();
+    const list = visible.filter(t => inFilter(t.id, queueFilter) && matchSearch(t));
     const el = document.getElementById('qList');
-    const verified = tickets.filter(t => ['pass','fail','blocked'].includes(statusOf(t.id).k)).length;
     document.getElementById('qSub').textContent =
-      `ReUse App — Fall 2026 · ${tickets.length} to verify · ${verified} done`;
+      `ReUse App — Fall 2026 · ${visible.length} to verify · ${tickets.length - visible.length} done`;
     renderStatus();
-    if (!list.length) { el.innerHTML = `<div style="color:var(--muted);font-size:14px;padding:24px 8px;text-align:center">No tickets match.</div>`; return; }
+    if (!list.length) { const msg = visible.length ? 'No tickets match.' : 'All run sheets have been QAed.'; el.innerHTML = `<div style="color:var(--muted);font-size:14px;padding:24px 8px;text-align:center">${msg}</div>`; return; }
     el.innerHTML = list.map(t => {
       const st = statusOf(t.id);
       const rb = readRun(t.id);
