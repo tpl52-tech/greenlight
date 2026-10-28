@@ -672,11 +672,20 @@
     const anyPre = r.pre && Object.values(r.pre).some(Boolean);
     return (anyStep || anyPre) ? { k:'prog', label:'In Progress' } : { k:'todo', label:'To Do' };
   }
-  // A run sheet is "QAed" once it has a recorded verdict; QAed sheets drop off the board.
-  const isQAed = id => ['pass','fail','blocked'].includes(statusOf(id).k);
-  const visibleTickets = () => tickets.filter(t => !isQAed(t.id)); // computed fresh so it tracks live verdict updates
-  function ensureVisibleCurrent() { // keep `current` on a visible (un-QAed) sheet; advance or clear when it drops off
-    if (current == null || !ticketById(current) || isQAed(current)) {
+  // A run sheet is "QAed" once it has a recorded verdict.
+  const hasVerdict = id => ['pass','fail','blocked'].includes(statusOf(id).k);
+  // QAed sheets linger on the board for a grace window, then flush off. So a fresh (or mistaken) verdict stays
+  // visible for two weeks, long enough to notice and re-test, instead of vanishing the instant it's recorded.
+  const FLUSH_AFTER_MS = 14 * 24 * 60 * 60 * 1000; // 2 weeks
+  function isFlushed(id) { // off the board: QAed, and its verdict has aged past the grace window
+    if (!hasVerdict(id)) return false;
+    const at = readRun(id).verdictAt;
+    if (!at) return false; // no recorded time (legacy / external write) → keep it visible rather than silently flush
+    return (Date.now() - at) > FLUSH_AFTER_MS;
+  }
+  const visibleTickets = () => tickets.filter(t => !isFlushed(t.id)); // computed fresh so it tracks live verdict updates
+  function ensureVisibleCurrent() { // keep `current` on a visible sheet; advance or clear when one flushes off
+    if (current == null || !ticketById(current) || isFlushed(current)) {
       const vis = visibleTickets();
       current = vis.length ? vis[0].id : null;
     }
@@ -718,8 +727,9 @@
     const visible = visibleTickets();
     const list = visible.filter(t => inFilter(t.id, queueFilter) && matchSearch(t));
     const el = document.getElementById('qList');
+    const qaed = tickets.filter(t => hasVerdict(t.id)).length; // "done" tracks the verdict, not the grace window
     document.getElementById('qSub').textContent =
-      `ReUse App — Fall 2026 · ${visible.length} to verify · ${tickets.length - visible.length} done`;
+      `ReUse App — Fall 2026 · ${tickets.length - qaed} to verify · ${qaed} done`;
     renderStatus();
     if (!list.length) { const msg = visible.length ? 'No tickets match.' : 'All run sheets have been QAed.'; el.innerHTML = `<div style="color:var(--muted);font-size:14px;padding:24px 8px;text-align:center">${msg}</div>`; return; }
     el.innerHTML = list.map(t => {
